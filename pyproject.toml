@@ -1,0 +1,5 @@
+[project]
+name = "mnemosyne"
+version = "0.1.0"
+description = "Approval-gated document curation for ~/raw"
+requires-python = ">=3.10"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mnemosyne"
+  short_description: "Curate ~/raw with approved policy and sealed inventory"
+  default_prompt: "Use $mnemosyne to audit or organize ~/raw through approval-gated policy, sealed inventory, placement, memory, or OKF workflows without implicit corpus changes."
