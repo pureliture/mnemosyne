@@ -1,0 +1,6 @@
+schema_version: 1
+workspaces:
+  fixture-service:
+    root: /fixture/service
+    confirmed_at: 2026-07-27T00:00:00Z
+    confirmation: fixture

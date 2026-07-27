@@ -1,0 +1,9 @@
+---
+name: raw-memory-sync
+description: Mnemosyne-owned approval-gated raw-memory sync worker.
+tools: Read, Glob, Grep, Edit, Write
+skills: [raw-memory-sync]
+color: cyan
+---
+
+{{AGENT_INSTRUCTIONS}}

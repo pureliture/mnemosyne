@@ -1,0 +1,7 @@
+name = "raw_memory_sync"
+description = "Mnemosyne-owned approval-gated raw-memory sync worker."
+model_reasoning_effort = "medium"
+
+developer_instructions = """
+{{AGENT_INSTRUCTIONS}}
+"""
