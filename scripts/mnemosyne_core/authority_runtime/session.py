@@ -735,7 +735,10 @@ class ReadSession:
             try:
                 if (
                     self.__reader.foundation_kind
-                    is ledger_runtime.FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1
+                    in {
+                        ledger_runtime.FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1,
+                        ledger_runtime.FoundationKind.LOCAL_SQLITE,
+                    }
                 ):
                     payload = curation_audit_core.report_from_findings([])
                 else:
