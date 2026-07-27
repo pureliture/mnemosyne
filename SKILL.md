@@ -12,6 +12,12 @@ It never treats a general cleanup request as permission to write or move files.
 This file is the canonical package source; it does not activate the installed Skill.
 Updating or activating the installed copy requires a separate user-approved action.
 
+## Python runtime
+
+**Python 3.10 or newer is required** (`pyproject.toml`: `requires-python = ">=3.10"`).
+The codebase uses PEP 604 runtime union syntax (`X | Y`) which is not available
+in Python 3.9.
+
 ## Public interface
 
 Use only these three public commands:
