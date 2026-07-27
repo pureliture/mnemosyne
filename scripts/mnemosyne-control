@@ -1,0 +1,27 @@
+#!/bin/sh
+# Run the Mnemosyne control CLI without selecting the Hermes profile launcher.
+set -eu
+
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+    LINK_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+    LINK_TARGET=$(readlink "$SCRIPT_PATH")
+    case "$LINK_TARGET" in
+        /*) SCRIPT_PATH=$LINK_TARGET ;;
+        *) SCRIPT_PATH=$LINK_DIRECTORY/$LINK_TARGET ;;
+    esac
+done
+SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+
+if [ -n "${MNEMOSYNE_PYTHON:-}" ]; then
+    exec "$MNEMOSYNE_PYTHON" "$SCRIPT_DIRECTORY/mnemosyne.py" "$@"
+fi
+
+for candidate in python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        exec "$candidate" "$SCRIPT_DIRECTORY/mnemosyne.py" "$@"
+    fi
+done
+
+echo "mnemosyne-control requires Python 3.10 or newer; set MNEMOSYNE_PYTHON to its path." >&2
+exit 127
