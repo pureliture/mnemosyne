@@ -47,6 +47,7 @@ class FoundationKind(str, Enum):
 
     LEGACY_BOOTSTRAP = "LEGACY_BOOTSTRAP"
     SAFE_LIBRARIAN_ACTIVATION_V1 = "SAFE_LIBRARIAN_ACTIVATION_V1"
+    LOCAL_SQLITE = "LOCAL_SQLITE"
 
 
 @dataclass(frozen=True)
@@ -61,9 +62,20 @@ class _SafeLibrarianActivationV1Foundation:
     policy_source: policy_authority.ActivationInitialPolicySource
 
 
+@dataclass(frozen=True)
+class _LocalSQLiteFoundation:
+    schema_state: str
+
+
 _FoundationEvidence = (
-    _LegacyBootstrapFoundation | _SafeLibrarianActivationV1Foundation
+    _LegacyBootstrapFoundation
+    | _SafeLibrarianActivationV1Foundation
+    | _LocalSQLiteFoundation
 )
+
+
+LOCAL_RUNTIME_MODE = "local-sqlite-v1"
+LOCAL_RUNTIME_MODE_PATH = "_registry/curation/runtime-mode"
 
 
 def _require_observed_by(value: str) -> str:
@@ -358,7 +370,7 @@ def _verify_file_identity_record(record: object, label: str) -> bytes:
 def _database_identity(
     path: Path,
     *,
-    activation_foundation: bool = False,
+    activation_foundation: Optional[bool] = False,
 ) -> Tuple[int, int]:
     parent_fd = safety.open_verified_directory(
         path.parent,
@@ -384,11 +396,15 @@ def _database_identity(
         ):
             raise LedgerRuntimeError("curation ledger identity is invalid")
         header = os.read(descriptor, 100)
-        expected_header_mode = b"\x01\x01" if activation_foundation else b"\x02\x02"
+        expected_header_modes = (
+            {b"\x01\x01", b"\x02\x02"}
+            if activation_foundation is None
+            else {b"\x01\x01" if activation_foundation else b"\x02\x02"}
+        )
         if (
             len(header) != 100
             or header[:16] != b"SQLite format 3\x00"
-            or header[18:20] != expected_header_mode
+            or header[18:20] not in expected_header_modes
         ):
             raise LedgerRuntimeError("curation ledger header is invalid")
         final = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -863,6 +879,73 @@ def _read_registry(root: Path) -> Tuple[os.stat_result, bytes]:
         os.close(parent_fd)
 
 
+def _local_runtime_enabled(root: Path) -> bool:
+    path = root / LOCAL_RUNTIME_MODE_PATH
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise LedgerRuntimeError("local curation runtime mode is unavailable") from exc
+    if raw != (LOCAL_RUNTIME_MODE + "\n").encode("ascii"):
+        raise LedgerRuntimeError("local curation runtime mode is invalid")
+    return True
+
+
+def _compile_local_policy(registry_raw: bytes, root: Path) -> policy.CompiledPolicy:
+    try:
+        return policy.compile_policy(registry_raw, str(root))
+    except policy.PolicyError as original_error:
+        try:
+            postimage = policy.build_additive_curation_postimage(
+                registry_raw,
+                str(root),
+            )
+            return policy.compile_policy(postimage, str(root))
+        except (TypeError, ValueError, policy.PolicyError) as exc:
+            raise PolicyAdmissionError("local placement registry is invalid") from original_error
+
+
+def _require_local_schema(connection: sqlite3.Connection) -> str:
+    rows = _schema_rows(connection)
+    if not rows or rows[0][:2] != (
+        control.CONTROL_SCHEMA_VERSION,
+        control.CONTROL_SCHEMA_SHA256,
+    ):
+        raise LedgerRuntimeError("local curation ledger schema is unknown")
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise LedgerRuntimeError("local curation SQLite foreign keys are disabled")
+    if connection.execute("PRAGMA foreign_key_check").fetchall():
+        raise LedgerRuntimeError("local curation SQLite foreign key check failed")
+    if [tuple(row) for row in connection.execute("PRAGMA integrity_check")] != [
+        ("ok",)
+    ]:
+        raise LedgerRuntimeError("local curation SQLite integrity check failed")
+    if len(rows) == 1:
+        return "v1"
+    if rows[1][:2] != (
+        ledger_schema.LEDGER_SCHEMA_VERSION,
+        ledger_schema.LEDGER_SCHEMA_SHA256,
+    ):
+        raise LedgerRuntimeError("local curation ledger schema is unknown")
+    try:
+        ledger_schema.verify_v2_schema(connection)
+    except ledger_schema.LedgerSchemaError as exc:
+        raise LedgerRuntimeError("local curation ledger v2 schema is invalid") from exc
+    if len(rows) == 2:
+        return "v2"
+    if len(rows) == 3 and rows[2][:2] == (
+        m3_schema.M3_SCHEMA_VERSION,
+        m3_schema.M3_SCHEMA_SHA256,
+    ):
+        try:
+            m3_schema.verify_v3_schema(connection)
+        except m3_schema.M3SchemaError as exc:
+            raise LedgerRuntimeError("local curation ledger v3 schema is invalid") from exc
+        return "v3"
+    raise LedgerRuntimeError("local curation ledger schema is unknown")
+
+
 def _entry_present(directory_fd: int, name: str) -> bool:
     try:
         os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1072,6 +1155,31 @@ def _current_policy_binding(
     foundation: _FoundationEvidence,
     registry_raw: bytes,
 ) -> Tuple[admission.ApprovedPolicyRef, policy.CompiledPolicy]:
+    if isinstance(foundation, _LocalSQLiteFoundation):
+        compiled = _compile_local_policy(registry_raw, root)
+        generation = 1
+        try:
+            row = connection.execute(
+                "SELECT generation FROM policy_head ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is not None and isinstance(row["generation"], int):
+                generation = max(1, row["generation"])
+        except sqlite3.Error:
+            pass
+        try:
+            approved = admission.ApprovedPolicyRef(
+                raw_hash=sha256_bytes(registry_raw),
+                full_hash=compiled.full_hash,
+                writer_control_hash=compiled.writer_hash,
+                foundation_hash=compiled.foundation_hash,
+                generation=generation,
+                source_kind="INITIAL",
+                source_run_id="local-sqlite",
+                guard_epoch=0,
+            )
+        except ValueError as exc:
+            raise PolicyAdmissionError("local policy fields are invalid") from exc
+        return approved, compiled
     if isinstance(foundation, _LegacyBootstrapFoundation):
         try:
             compiled = policy.compile_policy(registry_raw, str(root))
@@ -1127,6 +1235,7 @@ class _RuntimeResources:
     placement_path: Path
     policy_lock_label: str
     activation_selected: bool
+    local_mode: bool
     ledger_lock_path: Path
     ledger_path: Path
     placement_fd: int
@@ -1340,10 +1449,15 @@ def _open_runtime_resources(
     reader: bool,
 ) -> Iterator[_RuntimeResources]:
     canonical = _canonical_root(root)
-    activation_selected = _activation_selection(canonical)
-    if activation_selected:
+    local_mode = _local_runtime_enabled(canonical)
+    activation_selected = False if local_mode else _activation_selection(canonical)
+    if local_mode or activation_selected:
         placement_path = canonical / "_registry" / "curation" / "policy.lock"
-        policy_lock_label = "activation policy lock"
+        policy_lock_label = (
+            "local curation policy lock"
+            if local_mode
+            else "activation policy lock"
+        )
     else:
         placement_path = canonical / "_registry" / "placement-map.lock"
         policy_lock_label = "placement policy lock"
@@ -1367,7 +1481,7 @@ def _open_runtime_resources(
         ledger_path = canonical / "_registry" / "curation" / "ledger.sqlite3"
         ledger_identity = _database_identity(
             ledger_path,
-            activation_foundation=activation_selected,
+            activation_foundation=(None if local_mode else activation_selected),
         )
         connection = connector(ledger_path, ledger_identity)
         yield _RuntimeResources(
@@ -1375,6 +1489,7 @@ def _open_runtime_resources(
             placement_path=placement_path,
             policy_lock_label=policy_lock_label,
             activation_selected=activation_selected,
+            local_mode=local_mode,
             ledger_lock_path=ledger_lock_path,
             ledger_path=ledger_path,
             placement_fd=placement_fd,
@@ -1398,6 +1513,10 @@ def _open_runtime_resources(
 
 
 def _resolve_foundation(resources: _RuntimeResources) -> _FoundationEvidence:
+    if resources.local_mode:
+        return _LocalSQLiteFoundation(
+            schema_state=_require_local_schema(resources.connection),
+        )
     observed_activation = _activation_selection(resources.root)
     if observed_activation != resources.activation_selected:
         raise LedgerRuntimeError("foundation selection changed during open")
@@ -1507,6 +1626,8 @@ def _session_policy(
         expected_registry_sha256=(
             foundation.plan.initial_policy.registry_input_sha256
             if isinstance(foundation, _SafeLibrarianActivationV1Foundation)
+            else sha256_bytes(registry_raw)
+            if isinstance(foundation, _LocalSQLiteFoundation)
             else None
         ),
     )
@@ -1576,7 +1697,11 @@ def open_writer_session(
                 (
                     FoundationKind.LEGACY_BOOTSTRAP
                     if isinstance(foundation, _LegacyBootstrapFoundation)
-                    else FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1
+                    else (
+                        FoundationKind.LOCAL_SQLITE
+                        if isinstance(foundation, _LocalSQLiteFoundation)
+                        else FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1
+                    )
                 ),
                 verify_policy,
                 resources.verify_locks,
@@ -1677,7 +1802,11 @@ def open_reader_session(
             (
                 FoundationKind.LEGACY_BOOTSTRAP
                 if isinstance(foundation, _LegacyBootstrapFoundation)
-                else FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1
+                else (
+                    FoundationKind.LOCAL_SQLITE
+                    if isinstance(foundation, _LocalSQLiteFoundation)
+                    else FoundationKind.SAFE_LIBRARIAN_ACTIVATION_V1
+                )
             ),
             verify_policy,
             resources.verify_locks,

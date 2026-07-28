@@ -170,6 +170,7 @@ def project_activation_audit_report(
     if state not in {
         "NOT_ACTIVATED",
         "ACTIVE",
+        "LOCAL",
         "RECOVERY_REQUIRED",
         "BLOCKED",
     }:

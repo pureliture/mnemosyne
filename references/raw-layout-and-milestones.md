@@ -8,6 +8,9 @@
     placement-map.yml
     pending/                 # status=pending proposals
     decisions/               # approved/rejected history
+    curation/
+      runtime-mode           # local-sqlite-v1: no activation/foundation readback
+      ledger.sqlite3         # retained local ledger
   inbox/                     # new arrivals default entry
   memory/                    # workspace memory (redaction-heavy)
     workspaces.yml           # do not relocate
@@ -28,6 +31,21 @@
 5. Registry at `_registry/`; keep `memory/workspaces.yml`
 6. Graphify explicit-request-only
 7. Human operator primary; agent context secondary
+
+## Local SQLite runtime
+
+The single-user local raw installation uses the owner-only marker
+`_registry/curation/runtime-mode` with the exact value `local-sqlite-v1`.
+When present, Mnemosyne opens the existing `ledger.sqlite3` directly and does
+not require activation receipts, foundation readback, snapshot heads, or hash
+chain admission. The existing activation namespace is left untouched for
+historical compatibility; it is not a source of authority in local mode.
+
+This mode intentionally gives up tamper detection and multi-agent authority
+separation. It still keeps the proposal → decision → placement workflow and
+the SQLite/file persistence used by the curation views. `~/raw` remains a
+local non-Git data boundary; the published code and tests stay in
+`~/Projects/mnemosyne/`.
 
 ## Milestones
 

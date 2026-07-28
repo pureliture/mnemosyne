@@ -72,6 +72,9 @@ _AUDIT_ACTIONS = {
     "ACTIVE": {
         "ALREADY_ACTIVE": "Inspect one bounded scope.",
     },
+    "LOCAL": {
+        "LOCAL_SQLITE_RUNTIME": "Use the local SQLite runtime.",
+    },
     "RECOVERY_REQUIRED": {
         "PRESEAL_ORPHAN": (
             "Review the pre-seal activation namespace manually."
@@ -435,6 +438,13 @@ def require_audit_result(value: object) -> dict[str, object]:
             raise ValueError("activation audit result is invalid")
         require_initial_policy(value.get("initial_policy"))
     elif state == "ACTIVE":
+        if (
+            value.get("activation_eligible") is not False
+            or value.get("initial_policy") is not None
+            or value.get("integrity_ok") is not True
+        ):
+            raise ValueError("activation audit result is invalid")
+    elif state == "LOCAL":
         if (
             value.get("activation_eligible") is not False
             or value.get("initial_policy") is not None

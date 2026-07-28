@@ -31,6 +31,20 @@ Use only these three public commands:
 Do not handcraft a write request. Let the guide produce it, show its meaning to
 the human, preserve the exact bytes, and dispatch those same bytes.
 
+## Single-user local runtime
+
+The local raw installation may contain `_registry/curation/runtime-mode` with
+the exact value `local-sqlite-v1`. In that mode, the CLI retains the existing
+`ledger.sqlite3` and proposal/decision records but does not require activation
+receipts, foundation readback, snapshot heads, or hash-chain admission. The
+old activation files are ignored for runtime authority and are not deleted.
+
+This is intentionally a single-user trade-off: tamper detection and
+multi-agent authority separation are not provided. The proposal → decision →
+placement workflow remains in force, and `~/raw` is local non-Git data; only
+the sanitized source and tests belong under the `~/Projects/mnemosyne/` Git
+boundary.
+
 ## Workstream-first inspection
 
 Choose one exact Workstream before inspecting. Do not ask the human to choose a

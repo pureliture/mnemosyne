@@ -32,6 +32,8 @@ _SENTINELS = (
     "lock-migrations",
     "curation-runs",
 )
+_LOCAL_RUNTIME_MODE_PATH = "_registry/curation/runtime-mode"
+_LOCAL_RUNTIME_MODE = b"local-sqlite-v1\n"
 
 _RECOVERY_MARKER_STATES = frozenset(
     {
@@ -191,6 +193,15 @@ def _read_registry(
     return info, raw
 
 
+def _local_runtime_enabled(root: Path) -> bool:
+    try:
+        return (root / _LOCAL_RUNTIME_MODE_PATH).read_bytes() == _LOCAL_RUNTIME_MODE
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise AuthorityRuntimeError("local curation runtime mode is unavailable") from exc
+
+
 def _classify_markers(
     root: Path,
     *,
@@ -318,7 +329,17 @@ def capture_audit_evidence(
                 value[1] == stat.S_IFLNK for value in observations
             )
             legacy_present = bool(present_names - {"curation"})
-            if unsafe_sentinel:
+            local_mode = _local_runtime_enabled(canonical_root)
+            if local_mode:
+                if runtime_state not in {None, "ACTIVE"}:
+                    raise AuthorityRuntimeError(
+                        "local curation audit control state changed"
+                    )
+                state = "LOCAL"
+                eligible = False
+                reason_code = "LOCAL_SQLITE_RUNTIME"
+                initial_policy = None
+            elif unsafe_sentinel:
                 state = "BLOCKED"
                 eligible = False
                 reason_code = "UNSAFE_BOUNDARY"
@@ -390,9 +411,13 @@ def capture_audit_evidence(
                     eligible = True
                     reason_code = "FRESH_CURATION_STATE"
 
-            next_action = activation_contract.audit_next_safe_action(
-                state,
-                reason_code,
+            next_action = (
+                "Use the local SQLite runtime."
+                if state == "LOCAL"
+                else activation_contract.audit_next_safe_action(
+                    state,
+                    reason_code,
+                )
             )
 
             final_info, final_raw = _read_registry(registry_fd, registry_file)
