@@ -559,6 +559,15 @@ for _module_name, _relative_path, _is_package in RUNTIME_MODULE_CLOSURE:
 
 DEFAULT_ROOT = Path.home() / "raw"
 MNEMOSYNE_COMPATIBILITY_VERSION = "document-curation-m0-v2"
+# The source-controlled shell launcher has to resolve its own symlink before it
+# can select a Python >= 3.10 interpreter.  It is intentionally accepted only
+# when its complete, versioned byte sequence and its sibling canonical writer
+# both match; generic multi-line shell launchers remain rejected.
+MNEMOSYNE_CONTROL_LAUNCHER_V1_SHA256 = (
+    "f7fe43eb4582ac476da1cfabd2f94b6a2dd89fafb7d8a8419067b8f1a7912140"
+)
+MNEMOSYNE_CONTROL_LAUNCHER_KIND = "mnemosyne-control-v1"
+DIRECT_EXEC_LAUNCHER_KIND = "direct-exec-v1"
 PLACEMENT_LOCK_PROTOCOL_VERSION = "placement-lock-v1"
 LOCK_MIGRATION_ID_RE = re.compile(r"lockmig-\d{8}T\d{6}Z-[0-9a-f]{12}")
 INTERNAL_SKIP_DIRS = {".git", "__pycache__", "_registry"}
@@ -1605,12 +1614,71 @@ def writer_symlink_alias_evidence(
         os.close(parent_fd)
 
 
+def launcher_symlink_alias_evidence(
+    alias_path: Path,
+    launcher_path: Path,
+    launcher: dict[str, Any],
+) -> dict[str, Any]:
+    if not alias_path.is_absolute():
+        raise MnemosyneError(f"launcher alias path must be absolute: {alias_path}")
+    try:
+        parent_fd = open_verified_directory(alias_path.parent, require_owner_only=True)
+    except MnemosyneError as exc:
+        raise MnemosyneError(f"launcher alias parent is unsafe: {alias_path.parent}") from exc
+    try:
+        try:
+            before = os.stat(alias_path.name, dir_fd=parent_fd, follow_symlinks=False)
+            link_value = os.readlink(alias_path.name, dir_fd=parent_fd)
+            after = os.stat(alias_path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise MnemosyneError(f"launcher alias is unreadable: {alias_path}") from exc
+        if (
+            not stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.getuid()
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise MnemosyneError(f"launcher alias identity is unsafe: {alias_path}")
+        raw_target = Path(link_value)
+        target = raw_target if raw_target.is_absolute() else alias_path.parent / raw_target
+        lexical_target = Path(os.path.abspath(target))
+        if lexical_target != launcher_path:
+            raise MnemosyneError(f"launcher alias target mismatch: {alias_path}")
+        require_same_directory_identity(alias_path.parent, parent_fd, "launcher alias")
+        return {
+            "path": str(alias_path),
+            "sha256": launcher["sha256"],
+            "device": launcher["device"],
+            "inode": launcher["inode"],
+            "uid": before.st_uid,
+            "mode": f"{stat.S_IMODE(before.st_mode):04o}",
+            "nlink": before.st_nlink,
+            "lexical_kind": "symlink",
+            "link_device": before.st_dev,
+            "link_inode": before.st_ino,
+            "link_target": link_value,
+        }
+    finally:
+        os.close(parent_fd)
+
+
 def launcher_bytes_match_delegate(
     raw: bytes,
     delegate: str,
     direct_writer_paths: set[str],
     instruction_surface_paths: set[str],
+    launcher_path: Path,
+    launcher_kind: str | None,
 ) -> bool:
+    canonical_path = Path(__file__).resolve()
+    if (
+        launcher_kind == MNEMOSYNE_CONTROL_LAUNCHER_KIND
+        and launcher_path.resolve() == canonical_path.parent / "mnemosyne-control"
+        and delegate == str(canonical_path)
+        and sha256_bytes(raw) == MNEMOSYNE_CONTROL_LAUNCHER_V1_SHA256
+    ):
+        return True
+    if launcher_kind not in {None, DIRECT_EXEC_LAUNCHER_KIND}:
+        return False
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1645,20 +1713,70 @@ def launcher_bytes_match_delegate(
     return False
 
 
-def authoritative_entrypoint_discovery_roots() -> list[Path]:
-    home = Path.home()
+def canonical_source_scripts_alias_root(alias_path: Path, source_root: Path) -> Path:
+    """Accept only a direct, owner-controlled alias of the canonical scripts root."""
+    try:
+        parent_fd = open_verified_directory(alias_path.parent, require_owner_only=True)
+    except MnemosyneError as exc:
+        raise MnemosyneError(
+            f"authoritative source scripts alias parent is unsafe: {alias_path.parent}"
+        ) from exc
+    try:
+        try:
+            before = os.stat(alias_path.name, dir_fd=parent_fd, follow_symlinks=False)
+            link_value = os.readlink(alias_path.name, dir_fd=parent_fd)
+            after = os.stat(alias_path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise MnemosyneError(
+                f"authoritative source scripts alias is unreadable: {alias_path}"
+            ) from exc
+        if (
+            not stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.getuid()
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise MnemosyneError(
+                f"authoritative source scripts alias identity is unsafe: {alias_path}"
+            )
+        raw_target = Path(link_value)
+        target = raw_target if raw_target.is_absolute() else alias_path.parent / raw_target
+        if Path(os.path.abspath(target)) != source_root:
+            raise MnemosyneError(
+                f"authoritative source scripts alias target is invalid: {alias_path}"
+            )
+        require_same_directory_identity(alias_path.parent, parent_fd, "source scripts alias")
+        return source_root
+    finally:
+        os.close(parent_fd)
+
+
+def authoritative_entrypoint_discovery_roots(home_root: Path | None = None) -> list[Path]:
+    home = Path.home() if home_root is None else home_root
+    source_root = Path(__file__).resolve().parent
     candidates = [
-        Path(__file__).resolve().parent,
-        home / ".local" / "bin",
-        home / ".hermes" / "skills" / "mnemosyne" / "scripts",
-        home / ".codex" / "skills" / "mnemosyne" / "scripts",
-        home / ".claude" / "skills" / "mnemosyne" / "scripts",
+        (source_root, False),
+        (home / ".local" / "bin", False),
+        (home / ".hermes" / "skills" / "mnemosyne" / "scripts", True),
+        (home / ".codex" / "skills" / "mnemosyne" / "scripts", True),
+        (home / ".claude" / "skills" / "mnemosyne" / "scripts", True),
     ]
-    return [path for path in candidates if os.path.lexists(path)]
+    roots: list[Path] = []
+    for candidate, can_alias_source in candidates:
+        if not os.path.lexists(candidate):
+            continue
+        if candidate.is_symlink():
+            if not can_alias_source:
+                raise MnemosyneError(
+                    f"authoritative entrypoint discovery root is symlinked: {candidate}"
+                )
+            candidate = canonical_source_scripts_alias_root(candidate, source_root)
+        if candidate not in roots:
+            roots.append(candidate)
+    return roots
 
 
-def authoritative_entrypoint_instruction_surfaces() -> list[Path]:
-    home = Path.home()
+def authoritative_entrypoint_instruction_surfaces(home_root: Path | None = None) -> list[Path]:
+    home = Path.home() if home_root is None else home_root
     candidates = [
         home / ".codex" / "skills" / "mnemosyne" / "SKILL.md",
         home / ".hermes" / "skills" / "mnemosyne" / "SKILL.md",
@@ -1870,6 +1988,7 @@ def verify_installed_entrypoint_manifest(
     manifest_path: Path,
 ) -> tuple[dict[str, Any], str, dict[str, Any], str, list[dict[str, Any]]]:
     raw, manifest, _manifest_info = read_owner_only_manifest(manifest_path)
+    manifest_schema_version = manifest.get("schema_version")
     expected_keys = {
         "schema_version",
         "kind",
@@ -1884,10 +2003,12 @@ def verify_installed_entrypoint_manifest(
         "retired_paths",
         "runtime_modules",
     }
+    if manifest_schema_version == 3:
+        expected_keys.add("launcher_aliases")
     if set(manifest) != expected_keys:
         raise MnemosyneError("installed entrypoint manifest shape is invalid")
     if (
-        manifest.get("schema_version") != 2
+        manifest_schema_version not in {2, 3}
         or manifest.get("kind") != "MNEMOSYNE_INSTALLED_ENTRYPOINTS"
         or manifest.get("compatibility_version") != MNEMOSYNE_COMPATIBILITY_VERSION
         or manifest.get("coverage_complete") is not True
@@ -1895,14 +2016,17 @@ def verify_installed_entrypoint_manifest(
         or not manifest["declared_by"]
     ):
         raise MnemosyneError("installed entrypoint manifest contract is invalid")
-    if not all(isinstance(manifest.get(key), list) for key in [
+    collection_keys = [
         "writer_aliases",
         "instruction_surfaces",
         "launchers",
         "discovery_roots",
         "retired_paths",
         "runtime_modules",
-    ]):
+    ]
+    if manifest_schema_version == 3:
+        collection_keys.append("launcher_aliases")
+    if not all(isinstance(manifest.get(key), list) for key in collection_keys):
         raise MnemosyneError("installed entrypoint manifest collections are invalid")
 
     runtime_contracts = manifest["runtime_modules"]
@@ -2002,9 +2126,19 @@ def verify_installed_entrypoint_manifest(
 
     launchers: list[dict[str, Any]] = []
     launcher_paths: set[str] = set()
+    launchers_by_path: dict[str, dict[str, Any]] = {}
     for item in manifest["launchers"]:
-        if not isinstance(item, dict) or set(item) != {"path", "sha256", "delegates_to"}:
+        expected_launcher_keys = {"path", "sha256", "delegates_to"}
+        if manifest_schema_version == 3:
+            expected_launcher_keys.add("kind")
+        if not isinstance(item, dict) or set(item) != expected_launcher_keys:
             raise MnemosyneError("installed launcher contract is invalid")
+        launcher_kind = item.get("kind")
+        if manifest_schema_version == 3 and launcher_kind not in {
+            MNEMOSYNE_CONTROL_LAUNCHER_KIND,
+            DIRECT_EXEC_LAUNCHER_KIND,
+        }:
+            raise MnemosyneError("installed launcher kind is invalid")
         launcher_path = Path(str(item["path"]))
         if not isinstance(item["delegates_to"], str) or not item["delegates_to"]:
             raise MnemosyneError("installed launcher delegate contract is invalid")
@@ -2021,11 +2155,40 @@ def verify_installed_entrypoint_manifest(
                 delegate,
                 {str(canonical_path), *alias_paths},
                 instruction_surface_paths,
+                launcher_path,
+                launcher_kind,
             )
         ):
             blockers.append({"kind": "LAUNCHER_DELEGATE_MISMATCH", "path": str(launcher_path)})
+        if manifest_schema_version == 3:
+            launcher["kind"] = launcher_kind
         launchers.append(launcher)
         launcher_paths.add(str(launcher_path))
+        launchers_by_path[str(launcher_path)] = launcher
+
+    launcher_aliases: list[dict[str, Any]] = []
+    launcher_alias_paths: set[str] = set()
+    for item in manifest.get("launcher_aliases", []):
+        if not isinstance(item, dict) or set(item) != {"path", "must_resolve_to"}:
+            raise MnemosyneError("installed launcher alias contract is invalid")
+        alias_path = Path(str(item["path"]))
+        target_path = str(item["must_resolve_to"])
+        launcher = launchers_by_path.get(target_path)
+        if launcher is None:
+            raise MnemosyneError("installed launcher alias target contract is invalid")
+        if str(alias_path) in launcher_alias_paths:
+            raise MnemosyneError("installed launcher alias path is duplicated")
+        try:
+            launcher_alias = launcher_symlink_alias_evidence(
+                alias_path,
+                Path(target_path),
+                launcher,
+            )
+        except MnemosyneError:
+            blockers.append({"kind": "LAUNCHER_ALIAS_NOT_CANONICAL", "path": str(alias_path)})
+            continue
+        launcher_aliases.append(launcher_alias)
+        launcher_alias_paths.add(str(alias_path))
 
     declared_discovery_roots = [str(Path(str(value))) for value in manifest["discovery_roots"]]
     authoritative_roots = sorted({str(path) for path in authoritative_entrypoint_discovery_roots()})
@@ -2033,9 +2196,15 @@ def verify_installed_entrypoint_manifest(
         if required_root not in declared_discovery_roots:
             blockers.append({"kind": "INSTALL_SURFACE_NOT_COVERED", "path": required_root})
     discovery_roots: list[str] = []
-    allowed_paths = {str(canonical_path), *alias_paths, *launcher_paths}
+    allowed_paths = {
+        str(canonical_path),
+        *alias_paths,
+        *launcher_paths,
+        *launcher_alias_paths,
+    }
     required_parents = {str(canonical_path.parent)} | {
-        str(Path(path).parent) for path in alias_paths | launcher_paths
+        str(Path(path).parent)
+        for path in alias_paths | launcher_paths | launcher_alias_paths
     }
     for root_value in sorted(set(declared_discovery_roots) | set(authoritative_roots)):
         root_path = Path(str(root_value))
@@ -2077,7 +2246,7 @@ def verify_installed_entrypoint_manifest(
 
     blockers.sort(key=lambda item: (str(item.get("kind")), str(item.get("path"))))
     evidence = {
-        "schema_version": 2,
+        "schema_version": manifest_schema_version,
         "kind": "MNEMOSYNE_INSTALLED_ENTRYPOINT_EVIDENCE",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sha256_bytes(raw),
@@ -2096,6 +2265,10 @@ def verify_installed_entrypoint_manifest(
         ],
         "observed_at": utc_now(),
     }
+    if manifest_schema_version == 3:
+        evidence["launcher_aliases"] = [
+            durable_entrypoint_file_evidence(item) for item in launcher_aliases
+        ]
     evidence_sha256 = sha256_bytes(canonical_json_bytes({key: value for key, value in evidence.items() if key != "observed_at"}))
     return manifest, sha256_bytes(raw), evidence, evidence_sha256, blockers
 

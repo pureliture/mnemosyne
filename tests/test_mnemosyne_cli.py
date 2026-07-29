@@ -607,6 +607,12 @@ class MnemosyneCliTest(unittest.TestCase):
                 code = 2
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def canonical_entrypoint_path(self) -> Path:
+        module_file = mnemosyne.__file__
+        if not isinstance(module_file, str):
+            raise AssertionError("mnemosyne module has no source path")
+        return Path(module_file).resolve()
+
     def write_entrypoint_manifest(
         self,
         root: Path,
@@ -614,14 +620,15 @@ class MnemosyneCliTest(unittest.TestCase):
         discovery_roots=None,
         retired_paths=None,
     ) -> Path:
-        entrypoint = Path(mnemosyne.__file__).resolve()
+        entrypoint = self.canonical_entrypoint_path()
+        control_launcher = entrypoint.parent / "mnemosyne-control"
         runtime_modules = getattr(
             self,
             "authoritative_runtime_modules",
             mnemosyne.authoritative_runtime_module_paths(),
         )
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "kind": "MNEMOSYNE_INSTALLED_ENTRYPOINTS",
             "compatibility_version": mnemosyne.MNEMOSYNE_COMPATIBILITY_VERSION,
             "declared_by": "test-installer",
@@ -632,7 +639,15 @@ class MnemosyneCliTest(unittest.TestCase):
             },
             "writer_aliases": [],
             "instruction_surfaces": [],
-            "launchers": [],
+            "launchers": [
+                {
+                    "kind": "mnemosyne-control-v1",
+                    "path": str(control_launcher),
+                    "sha256": hashlib.sha256(control_launcher.read_bytes()).hexdigest(),
+                    "delegates_to": str(entrypoint),
+                }
+            ],
+            "launcher_aliases": [],
             "discovery_roots": [
                 str(path.resolve()) for path in (discovery_roots or [entrypoint.parent])
             ],
@@ -2932,6 +2947,171 @@ class MnemosyneCliTest(unittest.TestCase):
                 ],
             )
 
+    def test_preview_lock_migration_accepts_registered_mnemosyne_control_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            canonical = self.canonical_entrypoint_path()
+            launcher = canonical.parent / "mnemosyne-control"
+            manifest_path = self.write_entrypoint_manifest(root)
+
+            code, stdout, stderr = self.run_cli_exact(
+                "curation",
+                "preview-lock-migration",
+                "--requested-by",
+                "tester",
+                "--entrypoint-manifest",
+                str(manifest_path),
+                "--root",
+                str(root),
+                "--json",
+            )
+
+            self.assertEqual(code, 0, stderr)
+            proposal_path = Path(json.loads(stdout)["registry_updates"][0]["path"])
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            self.assertTrue(proposal["approval_ready"])
+            self.assertEqual(proposal["blockers"], [])
+            self.assertEqual(
+                proposal["entrypoint_evidence"]["launchers"][0]["path"], str(launcher)
+            )
+
+    def test_preview_lock_migration_blocks_source_launcher_with_generic_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            manifest_path = self.write_entrypoint_manifest(root)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["launchers"][0]["kind"] = "direct-exec-v1"
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o600)
+
+            code, stdout, stderr = self.run_cli_exact(
+                "curation",
+                "preview-lock-migration",
+                "--requested-by",
+                "tester",
+                "--entrypoint-manifest",
+                str(manifest_path),
+                "--root",
+                str(root),
+                "--json",
+            )
+
+            self.assertEqual(code, 0, stderr)
+            proposal_path = Path(json.loads(stdout)["registry_updates"][0]["path"])
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            self.assertFalse(proposal["approval_ready"])
+            self.assertIn(
+                {
+                    "kind": "LAUNCHER_DELEGATE_MISMATCH",
+                    "path": str(self.canonical_entrypoint_path().parent / "mnemosyne-control"),
+                },
+                proposal["blockers"],
+            )
+
+    def test_preview_lock_migration_accepts_registered_mnemosyne_control_launcher_alias(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as install_tmp:
+            root = Path(tmp)
+            install_root = Path(install_tmp).resolve()
+            self.run_cli("bootstrap", "--root", str(root))
+            canonical = self.canonical_entrypoint_path()
+            launcher = canonical.parent / "mnemosyne-control"
+            launcher_alias = install_root / "mnemosyne-control"
+            launcher_alias.symlink_to(launcher)
+            manifest_path = self.write_entrypoint_manifest(
+                root,
+                discovery_roots=[canonical.parent, install_root],
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 3
+            manifest["launcher_aliases"] = [
+                {
+                    "path": str(launcher_alias),
+                    "must_resolve_to": str(launcher),
+                }
+            ]
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o600)
+
+            code, stdout, stderr = self.run_cli_exact(
+                "curation",
+                "preview-lock-migration",
+                "--requested-by",
+                "tester",
+                "--entrypoint-manifest",
+                str(manifest_path),
+                "--root",
+                str(root),
+                "--json",
+            )
+
+            self.assertEqual(code, 0, stderr)
+            proposal_path = Path(json.loads(stdout)["registry_updates"][0]["path"])
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            self.assertTrue(proposal["approval_ready"])
+            self.assertEqual(proposal["blockers"], [])
+            self.assertEqual(
+                proposal["entrypoint_evidence"]["launcher_aliases"][0]["path"],
+                str(launcher_alias),
+            )
+
+    def test_preview_lock_migration_blocks_launcher_alias_with_wrong_target(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as install_tmp:
+            root = Path(tmp)
+            install_root = Path(install_tmp).resolve()
+            self.run_cli("bootstrap", "--root", str(root))
+            canonical = self.canonical_entrypoint_path()
+            launcher = canonical.parent / "mnemosyne-control"
+            foreign_target = install_root / "foreign-control"
+            foreign_target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            foreign_target.chmod(0o700)
+            launcher_alias = install_root / "mnemosyne-control"
+            launcher_alias.symlink_to(foreign_target)
+            manifest_path = self.write_entrypoint_manifest(
+                root,
+                discovery_roots=[canonical.parent, install_root],
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["launcher_aliases"] = [
+                {
+                    "path": str(launcher_alias),
+                    "must_resolve_to": str(launcher),
+                }
+            ]
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o600)
+
+            code, stdout, stderr = self.run_cli_exact(
+                "curation",
+                "preview-lock-migration",
+                "--requested-by",
+                "tester",
+                "--entrypoint-manifest",
+                str(manifest_path),
+                "--root",
+                str(root),
+                "--json",
+            )
+
+            self.assertEqual(code, 0, stderr)
+            proposal_path = Path(json.loads(stdout)["registry_updates"][0]["path"])
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+            self.assertFalse(proposal["approval_ready"])
+            self.assertIn(
+                {"kind": "LAUNCHER_ALIAS_NOT_CANONICAL", "path": str(launcher_alias)},
+                proposal["blockers"],
+            )
+
     def test_preview_lock_migration_blocks_differently_named_legacy_writer(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as install_tmp:
             root = Path(tmp)
@@ -3055,6 +3235,7 @@ class MnemosyneCliTest(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["launchers"] = [
                 {
+                    "kind": "direct-exec-v1",
                     "path": str(launcher),
                     "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
                     "delegates_to": "/old/mnemosyne.py",
@@ -3102,6 +3283,7 @@ class MnemosyneCliTest(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["launchers"] = [
                 {
+                    "kind": "direct-exec-v1",
                     "path": str(launcher),
                     "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
                     "delegates_to": str(Path(mnemosyne.__file__).resolve()),
@@ -3150,6 +3332,7 @@ class MnemosyneCliTest(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["launchers"] = [
                 {
+                    "kind": "direct-exec-v1",
                     "path": str(launcher),
                     "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
                     "delegates_to": str(canonical),
@@ -3221,13 +3404,14 @@ class MnemosyneCliTest(unittest.TestCase):
                 discovery_roots=[canonical.parent, install_root],
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["launchers"] = [
+            manifest["launchers"].append(
                 {
+                    "kind": "direct-exec-v1",
                     "path": str(launcher),
                     "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
                     "delegates_to": str(canonical),
                 }
-            ]
+            )
             manifest_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
                 encoding="utf-8",
@@ -3750,7 +3934,7 @@ class MnemosyneCliTest(unittest.TestCase):
             self.assertEqual(proposal["kind"], "LOCK_MIGRATION")
             self.assertEqual(proposal["requested_by"], "tester")
             self.assertTrue(proposal["approval_ready"])
-            self.assertEqual(proposal["entrypoint_evidence"]["schema_version"], 2)
+            self.assertEqual(proposal["entrypoint_evidence"]["schema_version"], 3)
             self.assertEqual(
                 [item["path"] for item in proposal["entrypoint_evidence"]["runtime_modules"]],
                 [str(path) for path in mnemosyne.authoritative_runtime_module_paths()],

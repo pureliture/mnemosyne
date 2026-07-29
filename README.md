@@ -17,6 +17,12 @@ python3 scripts/raw_memory_sync_install.py --home-root /tmp/mnemosyne-home
 python3 scripts/raw_memory_sync_install.py --home-root /tmp/mnemosyne-home --check
 ```
 
+When a local `mnemosyne-control` command is needed, add `--install-launcher`.
+The installer then writes both `.local/bin/mnemosyne-control` and its
+owner-only lock-migration manifest at
+`.local/share/mnemosyne/installed-entrypoints.json`; check both with
+`--check --install-launcher`.
+
 ## Verification
 
 Python 3.10 or newer is required.
