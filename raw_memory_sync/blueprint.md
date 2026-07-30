@@ -20,10 +20,18 @@ chosen home root:
 .claude/agents/raw-memory-sync.md
 ```
 
-It can additionally create `.local/bin/mnemosyne-control` only when explicitly
-requested, and only when the destination is absent or already points at the
-repository launcher.  It refuses to replace another file or link.  `--check`
-does not write and is used with a temporary home root in tests.
+With `--install-launcher`, it additionally creates
+`.local/bin/mnemosyne-control` only when the destination is absent or already
+is a direct symlink to the repository launcher.  It also writes the owner-only
+schema-v3 companion manifest `.local/share/mnemosyne/installed-entrypoints.json`.
+The manifest records the typed `mnemosyne-control-v1` source-launcher hash and
+canonical-writer delegate, the installed direct-symlink alias, and any verified
+authoritative discovery roots and instruction surfaces under the selected home.
+It refuses to replace another launcher file or link, does not accept an
+indirect launcher chain, and rejects unsupported or unsafe install surfaces
+rather than claiming complete coverage.  `--check --install-launcher` validates
+both the launcher and the manifest without writing, including rejection of a
+symlinked manifest; tests use a canonicalized temporary home root.
 
 The package is a source/static contract.  Its build and fixture checks prove
 projection parity and executor fixture behaviour; they do not claim an

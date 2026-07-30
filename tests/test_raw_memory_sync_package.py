@@ -92,7 +92,7 @@ class RawMemorySyncPackageTest(unittest.TestCase):
 
     def test_installed_codex_and_claude_projections_match_canonical_source(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            home_root = Path(temporary_directory) / "isolated-home"
+            home_root = (Path(temporary_directory) / "isolated-home").resolve()
             config = home_root / ".codex" / "config.toml"
             config.parent.mkdir(parents=True)
             config.write_text(
@@ -147,6 +147,185 @@ class RawMemorySyncPackageTest(unittest.TestCase):
             launcher = home_root / ".local" / "bin" / "mnemosyne-control"
             self.assertTrue(launcher.is_symlink())
             self.assertEqual(launcher.resolve(), CONTROL.resolve())
+            entrypoint_manifest = (
+                home_root / ".local" / "share" / "mnemosyne" / "installed-entrypoints.json"
+            )
+            self.assertTrue(entrypoint_manifest.is_file())
+            self.assertEqual(entrypoint_manifest.stat().st_mode & 0o777, 0o600)
+            manifest = json.loads(entrypoint_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["launchers"][0]["kind"], "mnemosyne-control-v1")
+            self.assertEqual(manifest["launchers"][0]["path"], str(CONTROL.resolve()))
+            self.assertEqual(
+                manifest["launcher_aliases"],
+                [
+                    {
+                        "path": str(home_root.resolve() / ".local" / "bin" / "mnemosyne-control"),
+                        "must_resolve_to": str(CONTROL.resolve()),
+                    }
+                ],
+            )
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import mnemosyne; "
+                    "_, _, _, _, blockers = mnemosyne.verify_installed_entrypoint_manifest("
+                    "Path.home() / '.local/share/mnemosyne/installed-entrypoints.json'); "
+                    "raise SystemExit(0 if not blockers else 1)",
+                ],
+                cwd=REPOSITORY_ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(home_root),
+                    "PYTHONPATH": str(REPOSITORY_ROOT / "scripts"),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_installer_rejects_indirect_existing_launcher_alias(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            home_root = (Path(temporary_directory) / "isolated-home").resolve()
+            launcher_directory = home_root / ".local" / "bin"
+            launcher_directory.mkdir(parents=True)
+            source_hop = launcher_directory / "source-hop"
+            source_hop.symlink_to(CONTROL.resolve())
+            (launcher_directory / "mnemosyne-control").symlink_to(source_hop)
+
+            installed = subprocess.run(
+                [sys.executable, str(INSTALLER), "--home-root", str(home_root), "--install-launcher"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(installed.returncode, 0)
+
+    def test_installer_does_not_follow_symlinked_launcher_parent(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            home_root = root / "isolated-home"
+            foreign_local = root / "foreign-local"
+            foreign_local.mkdir()
+            home_root.mkdir()
+            (home_root / ".local").symlink_to(foreign_local)
+
+            installed = subprocess.run(
+                [sys.executable, str(INSTALLER), "--home-root", str(home_root), "--install-launcher"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(installed.returncode, 0)
+            self.assertFalse((foreign_local / "bin" / "mnemosyne-control").exists())
+
+    def test_installer_rejects_foreign_authoritative_scripts_alias(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            home_root = root / "isolated-home"
+            foreign_scripts = root / "foreign-scripts"
+            foreign_scripts.mkdir()
+            skill_root = home_root / ".hermes" / "skills" / "mnemosyne"
+            skill_root.mkdir(parents=True)
+            (skill_root / "scripts").symlink_to(foreign_scripts)
+
+            installed = subprocess.run(
+                [sys.executable, str(INSTALLER), "--home-root", str(home_root), "--install-launcher"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(installed.returncode, 0)
+            self.assertIn("authoritative source scripts alias target is invalid", installed.stderr)
+
+    def test_installer_covers_existing_authoritative_skill_surfaces(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            home_root = (Path(temporary_directory) / "isolated-home").resolve()
+            skill_root = home_root / ".hermes" / "skills" / "mnemosyne"
+            skill_root.mkdir(parents=True)
+            (skill_root / "scripts").symlink_to(CONTROL.parent.resolve())
+            canonical_writer = CONTROL.parent / "mnemosyne.py"
+            (skill_root / "SKILL.md").write_text(
+                f"Use {canonical_writer} as the canonical writer.\n",
+                encoding="utf-8",
+            )
+
+            installed = subprocess.run(
+                [sys.executable, str(INSTALLER), "--home-root", str(home_root), "--install-launcher"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import mnemosyne; "
+                    "_, _, _, _, blockers = mnemosyne.verify_installed_entrypoint_manifest("
+                    "Path.home() / '.local/share/mnemosyne/installed-entrypoints.json'); "
+                    "raise SystemExit(0 if not blockers else 1)",
+                ],
+                cwd=REPOSITORY_ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(home_root),
+                    "PYTHONPATH": str(REPOSITORY_ROOT / "scripts"),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_installer_check_rejects_symlinked_entrypoint_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            home_root = root / "isolated-home"
+            installed = subprocess.run(
+                [sys.executable, str(INSTALLER), "--home-root", str(home_root), "--install-launcher"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            manifest_path = (
+                home_root / ".local" / "share" / "mnemosyne" / "installed-entrypoints.json"
+            )
+            replacement = root / "replacement-manifest.json"
+            replacement.write_bytes(manifest_path.read_bytes())
+            replacement.chmod(0o600)
+            manifest_path.unlink()
+            manifest_path.symlink_to(replacement)
+
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    str(INSTALLER),
+                    "--home-root",
+                    str(home_root),
+                    "--check",
+                    "--install-launcher",
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(checked.returncode, 0)
+            self.assertIn("unsafe entrypoint manifest", checked.stderr)
 
     def test_installer_rejects_ambiguous_legacy_registration_without_writing(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
