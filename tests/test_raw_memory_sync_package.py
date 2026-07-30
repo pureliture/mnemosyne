@@ -39,6 +39,39 @@ class RawMemorySyncPackageTest(unittest.TestCase):
             shutil.copy2(FIXTURE_ROOT / "workspaces.yml", memory / "workspaces.yml")
             shutil.copy2(FIXTURE_ROOT / "snapshot.md", workspace / "snapshot.md")
             plan_path = root / "approved-plan.json"
+            review_path = root / "approval-review.json"
+            review_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "mnemosyne-workspace-sync-approval-review-v1",
+                        "overview": "Fixture source facts and remaining limits are stored separately.",
+                        "current_state_groups": [
+                            {
+                                "title": "Current fixture facts",
+                                "items": ["The fixture snapshot is the current local source."],
+                            }
+                        ],
+                        "history_groups": [
+                            {
+                                "title": "Fixture record",
+                                "items": ["The sanitized fixture result is retained in history."],
+                            }
+                        ],
+                        "exclusions": ["Raw command output and credentials"],
+                        "references": [
+                            {
+                                "ref": "fixture: raw-memory-sync",
+                                "role": "Fixture source",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            review_path.chmod(0o600)
 
             planned = self.run_control(
                 root,
@@ -53,6 +86,8 @@ class RawMemorySyncPackageTest(unittest.TestCase):
                 "fixture: raw-memory-sync",
                 "--workstream",
                 "fixture-service",
+                "--approval-review",
+                str(review_path),
                 "--plan-out",
                 str(plan_path),
             )
@@ -64,6 +99,22 @@ class RawMemorySyncPackageTest(unittest.TestCase):
                 if line.startswith("plan_sha256:")
             )
             self.assertEqual(approved_sha256, hashlib.sha256(plan_path.read_bytes()).hexdigest())
+
+            rendered = self.run_control(
+                root,
+                "memory-sync",
+                "--render-approval-card",
+                str(plan_path),
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertTrue(rendered.stdout.startswith("# 승인 요청 — fixture-service\n\n## 한눈에 보기\n"))
+            self.assertIn("> - **저장할 요약:** Sanitized fixture result.", rendered.stdout)
+            self.assertIn("## 최신 상태에 반영할 내용", rendered.stdout)
+            self.assertIn("## 기록으로 남길 내용", rendered.stdout)
+            self.assertEqual(
+                rendered.stdout.rstrip().splitlines()[-1],
+                "이 내용 그대로 적용할까요?",
+            )
 
             applied = self.run_control(
                 root,

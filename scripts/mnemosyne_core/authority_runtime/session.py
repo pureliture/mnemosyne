@@ -22,6 +22,7 @@ from .. import (
     librarian_projection,
     operation_contract,
     safety,
+    workspace_sync_review,
 )
 from ..canonical_json import canonical_json_bytes, sha256_bytes
 from . import (
@@ -1215,7 +1216,7 @@ class WorkspaceSyncSession:
         self.__evidence = evidence
 
     @staticmethod
-    def _blocked(reason_code: str, next_safe_action: str) -> dict[str, str]:
+    def _blocked(reason_code: str, next_safe_action: str) -> dict[str, object]:
         return {
             "reason_code": reason_code,
             "next_safe_action": next_safe_action,
@@ -1314,6 +1315,51 @@ class WorkspaceSyncSession:
                 or receipt.exists()
             ):
                 return self._blocked("BASE_CHANGED", "create-plan")
+            try:
+                registry_text = registry_bytes.decode("utf-8")
+                snapshot_text = original_snapshot.decode("utf-8")
+                derived_effects = workspace_sync_review.derive_workspace_sync_effects(
+                    root=str(self.__root),
+                    workspace=workspace,
+                    workspace_root=workspace_sync_review.workspace_root_from_registry(
+                        registry_text,
+                        workspace,
+                    ),
+                    workstream=plan["workstream"],
+                    created_at=plan["created_at"],
+                    title=plan["title"],
+                    summary=plan["summary"],
+                    approval_review=plan["approval_review"],
+                    snapshot_text=snapshot_text,
+                )
+                expected_history_path = derived_effects["history_path"]
+                expected_snapshot_path = f"memory/{workspace}/snapshot.md"
+                expected_effects = {
+                    expected_history_path: {
+                        "path": expected_history_path,
+                        "base_sha256": None,
+                        "final_text": derived_effects["history_final_text"],
+                        "final_sha256": sha256_bytes(
+                            derived_effects["history_final_text"].encode("utf-8")
+                        ),
+                    },
+                    expected_snapshot_path: {
+                        "path": expected_snapshot_path,
+                        "base_sha256": sha256_bytes(original_snapshot),
+                        "final_text": derived_effects["snapshot_final_text"],
+                        "final_sha256": sha256_bytes(
+                            derived_effects["snapshot_final_text"].encode("utf-8")
+                        ),
+                    },
+                }
+            except (KeyError, TypeError, UnicodeDecodeError, ValueError):
+                return self._blocked("PLAN_MISMATCH", "create-plan")
+            if (
+                plan["workstream_status"] != derived_effects["workstream_status"]
+                or effects != expected_effects
+            ):
+                return self._blocked("PLAN_MISMATCH", "create-plan")
+            history = self.__root / expected_history_path
 
             tag = plan_sha256[:20]
             history_stage = history.with_name(f".{history.name}.{tag}.stage")

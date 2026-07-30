@@ -522,8 +522,10 @@ class MnemosyneCliTest(unittest.TestCase):
                 summary=options.get("--summary"),
                 ref=options.get("--ref", []),
                 workstream=options.get("--workstream"),
+                approval_review=options.get("--approval-review"),
                 plan_out=options.get("--plan-out"),
                 apply_plan=options.get("--apply-plan"),
+                render_approval_card=options.get("--render-approval-card"),
                 expected_plan_sha256=options.get("--expected-plan-sha256"),
                 actor=options.get("--actor", "local-operator"),
                 apply=bool(options.get("--apply")),
@@ -780,6 +782,51 @@ class MnemosyneCliTest(unittest.TestCase):
             encoding="utf-8",
         )
         return snapshot
+
+    def write_memory_sync_approval_review(
+        self,
+        root: Path,
+        *,
+        name: str = "approval-review.json",
+    ) -> Path:
+        review = {
+            "schema": "mnemosyne-workspace-sync-approval-review-v1",
+            "overview": "현재 확인된 구현과 CI 사실, 사용자 결정, 아직 실행으로 확인하지 않은 부분을 나눠 기록합니다.",
+            "current_state_groups": [
+                {
+                    "title": "현재 저장소와 CI에서 확인된 사실",
+                    "items": ["현재 source와 CI 확인은 실제 runtime 성공을 뜻하지 않습니다."],
+                },
+                {
+                    "title": "사용자가 정한 운영 방향",
+                    "items": ["승인된 workstream 경계 안에서만 최신 상태를 갱신합니다."],
+                },
+                {
+                    "title": "아직 실제 실행으로 확인하지 않은 것",
+                    "items": ["최신 revision의 runtime receipt와 readback은 이번 기록으로 단정하지 않습니다."],
+                },
+            ],
+            "history_groups": [
+                {
+                    "title": "기존 기록에서 이어 가거나 바로잡는 내용",
+                    "items": ["이번 대조 범위와 이전 기록의 차이를 history에 남깁니다."],
+                }
+            ],
+            "exclusions": ["원본 명령 출력, 전체 문서 본문, credential과 endpoint"],
+            "references": [
+                {
+                    "ref": "public-pr: example-service#123",
+                    "role": "현재 구현과 CI를 대조한 자료",
+                }
+            ],
+        }
+        path = root / name
+        path.write_text(
+            json.dumps(review, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        return path
 
     def write_history(self, root: Path, workspace: str, name: str, title: str, body: str):
         history_dir = root / "memory" / workspace / "history"
@@ -6653,7 +6700,80 @@ class MnemosyneCliTest(unittest.TestCase):
             self.assertEqual((target / "index.md").read_text(encoding="utf-8"), "# Example\n")
             self.assertEqual(len(list((root / "_registry" / "decisions").glob("*.yml"))), 1)
 
+    def test_memory_sync_snapshot_replaces_prior_current_state_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = self.write_memory_workspace(root)
+            first, _ = mnemosyne.build_updated_snapshot(
+                snapshot.read_text(encoding="utf-8"),
+                "2026-07-09T00:00:00Z",
+                ["memory-sync: first"],
+                "example-service",
+                "First sync",
+                "First summary.",
+                [{"title": "Current fact", "items": ["Old fact"]}],
+            )
+            second, _ = mnemosyne.build_updated_snapshot(
+                first,
+                "2026-07-10T00:00:00Z",
+                ["memory-sync: second"],
+                "example-service",
+                "Second sync",
+                "Second summary.",
+                [{"title": "Current fact", "items": ["New fact"]}],
+            )
+
+            self.assertIn("New fact", second)
+            self.assertNotIn("Old fact", second)
+            self.assertEqual(second.count("  current_state:"), 1)
+
     def test_memory_sync_plan_seals_effects_without_writing_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "workspace-sync-plan.json"
+
+            code, stdout, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "PR 123 merged",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 0, stderr)
+            self.assertIn("mode: memory-sync plan", stdout)
+            self.assertIn("plan_sha256:", stdout)
+            self.assertTrue(plan_path.is_file())
+            self.assertEqual(stat.S_IMODE(plan_path.stat().st_mode), 0o600)
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertEqual(plan["schema"], "mnemosyne-workspace-sync-plan-v2")
+            self.assertEqual(plan["workstream_status"], "new")
+            self.assertEqual(plan["workspace"], "example-service")
+            snapshot_effect = next(
+                effect for effect in plan["effects"] if effect["path"].endswith("/snapshot.md")
+            )
+            self.assertIn("- id: example-service", snapshot_effect["final_text"])
+            self.assertIn("status: active", snapshot_effect["final_text"])
+            self.assertIn("Sanitized outcome summary.", snapshot_effect["final_text"])
+            self.assertIn("현재 저장소와 CI에서 확인된 사실", snapshot_effect["final_text"])
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+            self.assertFalse((root / "memory" / "example-service" / "history").exists())
+
+    def test_memory_sync_requires_structured_approval_review_before_sealing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.run_cli("bootstrap", "--root", str(root))
@@ -6661,7 +6781,7 @@ class MnemosyneCliTest(unittest.TestCase):
             before = snapshot.read_text(encoding="utf-8")
             plan_path = root / "workspace-sync-plan.json"
 
-            code, stdout, stderr = self.run_cli(
+            code, _, stderr = self.run_cli(
                 "memory-sync",
                 "--workspace",
                 "example-service",
@@ -6677,28 +6797,327 @@ class MnemosyneCliTest(unittest.TestCase):
                 str(root),
             )
 
-            self.assertEqual(code, 0, stderr)
-            self.assertIn("mode: memory-sync plan", stdout)
-            self.assertIn("plan_sha256:", stdout)
-            self.assertTrue(plan_path.is_file())
-            self.assertEqual(stat.S_IMODE(plan_path.stat().st_mode), 0o600)
-            plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            self.assertEqual(plan["schema"], "mnemosyne-workspace-sync-plan-v1")
-            self.assertEqual(plan["workspace"], "example-service")
-            snapshot_effect = next(
-                effect for effect in plan["effects"] if effect["path"].endswith("/snapshot.md")
+            self.assertEqual(code, 2)
+            self.assertIn("requires --approval-review", stderr)
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+
+    def test_memory_sync_rejects_plan_that_exceeds_apply_size_bound_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            review["current_state_groups"] = [
+                {
+                    "title": "Large bounded review",
+                    "items": [("safe detail. " * 240_000).strip()],
+                }
+            ]
+            review_path.write_text(
+                json.dumps(review, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
             )
-            self.assertIn("- id: example-service", snapshot_effect["final_text"])
-            self.assertIn("status: active", snapshot_effect["final_text"])
-            self.assertIn("Sanitized outcome summary.", snapshot_effect["final_text"])
+            review_path.chmod(0o600)
+            plan_path = root / "workspace-sync-plan.json"
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Bounded approval review",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("workspace sync Plan is too large", stderr)
+            self.assertFalse(plan_path.exists())
             self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
             self.assertFalse((root / "memory" / "example-service" / "history").exists())
+
+    def test_memory_sync_rejects_plan_that_exceeds_operation_request_transport_bound_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            review["current_state_groups"] = [
+                {
+                    "title": "Transport-bounded review",
+                    "items": [("safe detail. " * 90_000).strip()],
+                }
+            ]
+            review_path.write_text(
+                json.dumps(review, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            review_path.chmod(0o600)
+            self.assertLess(review_path.stat().st_size, 8 * 1024 * 1024)
+            plan_path = root / "workspace-sync-plan.json"
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Transport-bounded approval review",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("operation request transport limit", stderr)
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+            self.assertFalse((root / "memory" / "example-service" / "history").exists())
+
+    def test_memory_sync_rejects_plan_output_inside_raw_memory_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "memory" / "example-service" / "pending-plan.json"
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Plan destination boundary",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("plan output must be outside raw memory", stderr)
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+
+    def test_memory_sync_rejects_plan_output_parent_swapped_into_raw_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "raw"
+            root.mkdir()
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_parent = root.parent / "safe-plans"
+            plan_parent.mkdir()
+            plan_path = plan_parent / "pending-plan.json"
+            raw_memory_parent = root / "memory" / "example-service"
+            original_write = mnemosyne.write_owner_only_plan
+
+            def swap_parent_then_write(path, plan_bytes, **kwargs):
+                plan_parent.rename(root.parent / "safe-plans-original")
+                os.symlink(raw_memory_parent, plan_parent)
+                return original_write(path, plan_bytes, **kwargs)
+
+            with mock.patch.object(
+                mnemosyne,
+                "write_owner_only_plan",
+                side_effect=swap_parent_then_write,
+            ):
+                code, _, stderr = self.run_cli(
+                    "memory-sync",
+                    "--workspace",
+                    "example-service",
+                    "--title",
+                    "Plan parent boundary",
+                    "--summary",
+                    "Sanitized outcome summary.",
+                    "--ref",
+                    "public-pr: example-service#123",
+                    "--approval-review",
+                    str(review_path),
+                    "--plan-out",
+                    str(plan_path),
+                    "--root",
+                    str(root),
+                )
+
+            self.assertEqual(code, 2)
+            self.assertIn("plan output parent changed", stderr)
+            self.assertFalse((raw_memory_parent / plan_path.name).exists())
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+
+    def test_memory_sync_renders_sealed_adaptive_approval_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "workspace-sync-plan.json"
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "PR 123 merged",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 0, stderr)
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertEqual(plan["schema"], "mnemosyne-workspace-sync-plan-v2")
+            self.assertEqual(
+                plan["approval_review"]["schema"],
+                "mnemosyne-workspace-sync-approval-review-v1",
+            )
+
+            code, card, stderr = self.run_cli(
+                "memory-sync",
+                "--render-approval-card",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 0, stderr)
+            self.assertTrue(card.startswith("# 승인 요청 — example-service\n\n## 한눈에 보기\n"))
+            self.assertIn("> - **저장할 요약:** Sanitized outcome summary.", card)
+            self.assertLess(card.index("## 한눈에 보기"), card.index("## 최신 상태에 반영할 내용"))
+            self.assertLess(card.index("## 최신 상태에 반영할 내용"), card.index("## 기록으로 남길 내용"))
+            self.assertLess(card.index("## 기록으로 남길 내용"), card.index("## 이번 기록에 포함하지 않는 내용"))
+            self.assertIn("### 현재 저장소와 CI에서 확인된 사실", card)
+            self.assertIn("### 사용자가 정한 운영 방향", card)
+            self.assertIn("### 아직 실제 실행으로 확인하지 않은 것", card)
+            self.assertIn("### 기존 기록에서 이어 가거나 바로잡는 내용", card)
+            self.assertIn("`public-pr: example-service#123` — 현재 구현과 CI를 대조한 자료", card)
+            self.assertNotIn(str(plan_path), card)
+            self.assertNotIn("plan_sha256:", card)
+            self.assertEqual(card.rstrip().splitlines()[-1], "이 내용 그대로 적용할까요?")
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
+            self.assertFalse((root / "memory" / "example-service" / "history").exists())
+
+    def test_memory_sync_card_exposes_effect_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            self.write_memory_workspace(root)
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "workspace-sync-plan.json"
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Timestamp-bound review",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+            self.assertEqual(code, 0, stderr)
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+            code, card, stderr = self.run_cli(
+                "memory-sync",
+                "--render-approval-card",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 0, stderr)
+            self.assertIn(f"> - **기록 시각:** {plan['created_at']}", card)
+
+    def test_memory_sync_rejects_symlinked_approved_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_text(encoding="utf-8")
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "workspace-sync-plan.json"
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Symlinked plan boundary",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+            self.assertEqual(code, 0, stderr)
+            linked_plan = root / "linked-plan.json"
+            linked_plan.symlink_to(plan_path.name)
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--render-approval-card",
+                str(linked_plan),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("cannot open approved plan", stderr)
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), before)
 
     def test_memory_sync_apply_plan_creates_history_receipt_and_updates_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.run_cli("bootstrap", "--root", str(root))
             snapshot = self.write_memory_workspace(root)
+            review_path = self.write_memory_sync_approval_review(root)
             plan_path = root / "workspace-sync-plan.json"
 
             code, plan_stdout, stderr = self.run_cli(
@@ -6713,6 +7132,8 @@ class MnemosyneCliTest(unittest.TestCase):
                 "public-pr: example-service#123",
                 "--workstream",
                 "example-service",
+                "--approval-review",
+                str(review_path),
                 "--plan-out",
                 str(plan_path),
                 "--root",
@@ -6746,6 +7167,8 @@ class MnemosyneCliTest(unittest.TestCase):
             self.assertIn("workspace: example-service", history)
             self.assertIn("workstream: example-service", history)
             self.assertIn("Sanitized outcome summary.", history)
+            self.assertIn("## 최신 상태에 반영한 내용", history)
+            self.assertIn("### 기존 기록에서 이어 가거나 바로잡는 내용", history)
 
             updated = snapshot.read_text(encoding="utf-8")
             self.assertIn("- existing-ref: keep-me", updated)
@@ -6755,14 +7178,85 @@ class MnemosyneCliTest(unittest.TestCase):
             self.assertIn("- id: example-service", updated)
             self.assertIn("status: active", updated)
             self.assertIn("Sanitized outcome summary.", updated)
+            self.assertIn("current_state:", updated)
+            self.assertIn("아직 실제 실행으로 확인하지 않은 것", updated)
             receipt_files = list((root / "memory" / "_receipts" / "workspace-sync").glob("*.json"))
             self.assertEqual(len(receipt_files), 1)
+
+    def test_memory_sync_apply_plan_rejects_effect_not_derived_from_sealed_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_cli("bootstrap", "--root", str(root))
+            snapshot = self.write_memory_workspace(root)
+            before = snapshot.read_bytes()
+            review_path = self.write_memory_sync_approval_review(root)
+            plan_path = root / "workspace-sync-plan.json"
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--workspace",
+                "example-service",
+                "--title",
+                "Captured outcome",
+                "--summary",
+                "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
+                "--plan-out",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+            self.assertEqual(code, 0, stderr)
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            history_effect = next(
+                effect
+                for effect in plan["effects"]
+                if "/history/" in effect["path"]
+            )
+            hidden_effect = "Hidden effect not shown in the approval card."
+            history_effect["final_text"] += f"\n{hidden_effect}\n"
+            history_effect["final_sha256"] = mnemosyne.sha256_bytes(
+                history_effect["final_text"].encode("utf-8")
+            )
+            plan_bytes = mnemosyne.canonical_json_bytes(plan) + b"\n"
+            plan_path.write_bytes(plan_bytes)
+            expected_plan_sha256 = mnemosyne.sha256_bytes(plan_bytes)
+
+            code, card, stderr = self.run_cli(
+                "memory-sync",
+                "--render-approval-card",
+                str(plan_path),
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 0, stderr)
+            self.assertNotIn(hidden_effect, card)
+
+            code, _, stderr = self.run_cli(
+                "memory-sync",
+                "--apply-plan",
+                str(plan_path),
+                "--expected-plan-sha256",
+                expected_plan_sha256,
+                "--root",
+                str(root),
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("PLAN_MISMATCH", stderr)
+            self.assertEqual(snapshot.read_bytes(), before)
+            self.assertFalse((root / "memory" / "example-service" / "history").exists())
+            self.assertFalse((root / "memory" / "_receipts").exists())
 
     def test_memory_sync_apply_plan_rejects_changed_snapshot_without_effects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.run_cli("bootstrap", "--root", str(root))
             snapshot = self.write_memory_workspace(root)
+            review_path = self.write_memory_sync_approval_review(root)
             plan_path = root / "workspace-sync-plan.json"
             code, stdout, stderr = self.run_cli(
                 "memory-sync",
@@ -6772,6 +7266,10 @@ class MnemosyneCliTest(unittest.TestCase):
                 "Captured outcome",
                 "--summary",
                 "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
                 "--plan-out",
                 str(plan_path),
                 "--root",
@@ -6808,6 +7306,7 @@ class MnemosyneCliTest(unittest.TestCase):
             self.run_cli("bootstrap", "--root", str(root))
             snapshot = self.write_memory_workspace(root)
             before = snapshot.read_bytes()
+            review_path = self.write_memory_sync_approval_review(root)
             plan_path = root / "workspace-sync-plan.json"
             code, stdout, stderr = self.run_cli(
                 "memory-sync",
@@ -6817,6 +7316,10 @@ class MnemosyneCliTest(unittest.TestCase):
                 "Captured outcome",
                 "--summary",
                 "Sanitized outcome summary.",
+                "--ref",
+                "public-pr: example-service#123",
+                "--approval-review",
+                str(review_path),
                 "--plan-out",
                 str(plan_path),
                 "--root",

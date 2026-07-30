@@ -20,6 +20,7 @@ from .. import (
     librarian_placement,
     librarian_records,
     operation_contract,
+    workspace_sync_review,
 )
 from ..canonical_json import canonical_json_bytes, sha256_bytes
 from ..authority_runtime import canonical_curation as curation_plan_apply
@@ -201,13 +202,20 @@ def _validate_workspace_sync_request(request: object) -> None:
     if (
         type(plan) is not dict
         or canonical_json_bytes(plan) + b"\n" != plan_bytes
-        or plan.get("schema") != "mnemosyne-workspace-sync-plan-v1"
         or plan.get("root") != request.root
         or plan.get("workstream") != request.scope["workstream_id"]
         or type(plan.get("effects")) is not list
         or len(plan["effects"]) != 2
     ):
         raise ValueError("workspace sync Plan does not match request")
+    if plan.get("schema") == "mnemosyne-workspace-sync-plan-v1":
+        return
+    if plan.get("schema") != workspace_sync_review.WORKSPACE_SYNC_PLAN_V2_SCHEMA:
+        raise ValueError("workspace sync Plan does not match request")
+    try:
+        workspace_sync_review.validate_workspace_sync_plan_v2(plan)
+    except ValueError as exc:
+        raise ValueError("workspace sync Plan does not match request") from exc
 
 
 def _workspace_sync_handler(admitted: operation_contract.AdmittedOperation, session: object):
