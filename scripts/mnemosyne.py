@@ -62,6 +62,11 @@ RUNTIME_MODULE_CLOSURE = (
         False,
     ),
     (
+        "mnemosyne_core.workspace_sync_review",
+        "workspace_sync_review.py",
+        False,
+    ),
+    (
         "mnemosyne_core.authority_runtime",
         "authority_runtime/__init__.py",
         True,
@@ -444,6 +449,7 @@ _canonical_json_core = _bootstrap_core_module_by_path("canonical_json.py")
 _safety_core = _bootstrap_core_module_by_path("safety.py")
 _policy_core = _bootstrap_core_module_by_path("policy.py")
 _control_core = _bootstrap_core_module_by_path("control.py")
+_workspace_sync_review_core = _bootstrap_core_module_by_path("workspace_sync_review.py")
 _inventory_core = _bootstrap_core_module_by_path("inventory.py")
 _policy_state_core = _bootstrap_core_module_by_path("policy_state.py")
 _policy_authority_core = _bootstrap_core_module_by_path("policy_authority.py")
@@ -560,6 +566,7 @@ for _module_name, _relative_path, _is_package in RUNTIME_MODULE_CLOSURE:
 DEFAULT_ROOT = Path.home() / "raw"
 MNEMOSYNE_COMPATIBILITY_VERSION = "document-curation-m0-v2"
 PLACEMENT_LOCK_PROTOCOL_VERSION = "placement-lock-v1"
+MAX_WORKSPACE_SYNC_PLAN_BYTES = 8 * 1024 * 1024
 LOCK_MIGRATION_ID_RE = re.compile(r"lockmig-\d{8}T\d{6}Z-[0-9a-f]{12}")
 INTERNAL_SKIP_DIRS = {".git", "__pycache__", "_registry"}
 UNSAFE_CONTENT_PATTERNS = [
@@ -3591,6 +3598,29 @@ def memory_root(root: Path) -> Path:
     return root / "memory"
 
 
+def canonical_plan_path(path: Path) -> Path:
+    """Resolve only the parent so the plan leaf stays subject to O_NOFOLLOW."""
+    try:
+        absolute_path = Path(os.path.abspath(path.expanduser()))
+        return absolute_path.parent.resolve(strict=False) / absolute_path.name
+    except (OSError, RuntimeError) as exc:
+        raise MnemosyneError("plan output path is invalid") from exc
+
+
+def require_plan_outside_memory_root(root: Path, plan_path: Path) -> Path:
+    try:
+        resolved_memory_root = memory_root(root).resolve(strict=False)
+        resolved_plan_path = canonical_plan_path(plan_path)
+    except (OSError, RuntimeError) as exc:
+        raise MnemosyneError("plan output path is invalid") from exc
+    if (
+        resolved_plan_path == resolved_memory_root
+        or resolved_memory_root in resolved_plan_path.parents
+    ):
+        raise MnemosyneError("plan output must be outside raw memory")
+    return resolved_plan_path
+
+
 def workspace_memory_dir(root: Path, workspace: str) -> Path:
     base = memory_root(root).resolve(strict=False)
     path = (memory_root(root) / workspace).resolve(strict=False)
@@ -3741,6 +3771,78 @@ def upsert_snapshot_workstream(body: str, workstream: str, title: str, summary: 
     return "\n".join(lines) + "\n"
 
 
+def snapshot_workstream_status(text: str, workstream: str) -> str:
+    _, body = split_frontmatter(text)
+    entry_id = f"- id: {workstream}"
+    return "existing" if entry_id in body.splitlines() else "new"
+
+
+def render_snapshot_current_state_lines(
+    current_state_groups: list[dict[str, Any]],
+) -> list[str]:
+    lines = ["  current_state:"]
+    for group in current_state_groups:
+        for item in group["items"]:
+            detail = f"{group['title']}: {item}"
+            lines.append(f"    - {json.dumps(detail, ensure_ascii=False)}")
+    return lines
+
+
+def upsert_snapshot_workstream_current_state(
+    body: str,
+    workstream: str,
+    current_state_groups: list[dict[str, Any]],
+) -> str:
+    lines = body.splitlines()
+    entry_id = f"- id: {workstream}"
+    try:
+        section_start = lines.index("## Workstreams")
+        section_end = next(
+            (
+                index
+                for index in range(section_start + 1, len(lines))
+                if lines[index].startswith("## ")
+            ),
+            len(lines),
+        )
+        entry_start = lines.index(entry_id, section_start + 1, section_end)
+    except ValueError as exc:
+        raise MnemosyneError("workstream entry is unavailable for current-state update") from exc
+    entry_end = next(
+        (
+            index
+            for index in range(entry_start + 1, section_end)
+            if lines[index].startswith("- id:")
+        ),
+        section_end,
+    )
+    current_state_start = next(
+        (
+            index
+            for index in range(entry_start + 1, entry_end)
+            if lines[index] == "  current_state:"
+        ),
+        None,
+    )
+    if current_state_start is None:
+        insertion = entry_end
+        while insertion > entry_start and not lines[insertion - 1]:
+            insertion -= 1
+    else:
+        insertion = current_state_start
+        current_state_end = next(
+            (
+                index
+                for index in range(current_state_start + 1, entry_end)
+                if lines[index].startswith("  ") and not lines[index].startswith("    ")
+            ),
+            entry_end,
+        )
+        del lines[current_state_start:current_state_end]
+    lines[insertion:insertion] = render_snapshot_current_state_lines(current_state_groups)
+    return "\n".join(lines) + "\n"
+
+
 def build_updated_snapshot(
     text: str,
     created_at: str,
@@ -3748,6 +3850,7 @@ def build_updated_snapshot(
     workstream: str,
     title: str,
     summary: str,
+    current_state_groups: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[str]]:
     frontmatter, body = split_frontmatter(text)
     existing_refs = {line.strip()[2:].strip() for line in frontmatter if line.strip().startswith("- ")}
@@ -3781,53 +3884,100 @@ def build_updated_snapshot(
         insert_at += 1
 
     body = upsert_snapshot_workstream(body, workstream, title, summary)
+    if current_state_groups is not None:
+        body = upsert_snapshot_workstream_current_state(
+            body,
+            workstream,
+            current_state_groups,
+        )
     updated = "---\n" + "\n".join(updated_lines) + "\n---\n" + body
     return updated, refs_to_add
 
 
-def write_owner_only_plan(path: Path, plan_bytes: bytes) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+def _require_plan_parent_identity(path: Path, parent_fd: int) -> None:
     try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise MnemosyneError(f"plan already exists: {path}") from exc
+        opened = os.fstat(parent_fd)
+        observed = os.stat(path.parent, follow_symlinks=False)
     except OSError as exc:
-        raise MnemosyneError(f"cannot create plan: {path}") from exc
+        raise MnemosyneError("plan output parent changed or is unavailable") from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(observed.st_mode)
+        or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino)
+    ):
+        raise MnemosyneError("plan output parent changed or is unsafe")
+
+
+def _open_verified_plan_parent(path: Path) -> int:
+    if (
+        not path.is_absolute()
+        or not path.name
+        or path.name in {".", ".."}
+        or any(part in {".", ".."} for part in path.parts)
+    ):
+        raise MnemosyneError("plan output path is invalid")
     try:
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_nlink != 1
-        ):
-            raise MnemosyneError("new plan file is unsafe")
-        offset = 0
-        while offset < len(plan_bytes):
-            written = os.write(fd, plan_bytes[offset:])
-            if written <= 0:
-                raise MnemosyneError("plan write made no progress")
-            offset += written
-        os.fsync(fd)
+        parent_fd = open_verified_directory(path.parent, require_owner_only=True)
+    except MnemosyneError as exc:
+        raise MnemosyneError("plan output parent changed or is unsafe") from exc
+    try:
+        _require_plan_parent_identity(path, parent_fd)
+    except BaseException:
+        os.close(parent_fd)
+        raise
+    return parent_fd
+
+
+def write_owner_only_plan(
+    path: Path,
+    plan_bytes: bytes,
+    *,
+    parent_fd: int | None = None,
+) -> None:
+    owns_parent_fd = parent_fd is None
+    if parent_fd is None:
+        parent_fd = _open_verified_plan_parent(path)
+    try:
+        _require_plan_parent_identity(path, parent_fd)
+
+        def require_parent_identity(*_unused: object) -> None:
+            _require_plan_parent_identity(path, parent_fd)
+
+        _safety_core.publish_bytes_atomic_no_replace_at(
+            parent_fd,
+            path.name,
+            path,
+            plan_bytes,
+            label="workspace sync Plan",
+            mode=0o600,
+            collision_error=f"plan already exists: {path}",
+            final_identity_error=f"new plan file identity changed: {path}",
+            error_type=MnemosyneError,
+            after_fd_readback=require_parent_identity,
+            after_file_fsync=require_parent_identity,
+            after_file_readback=require_parent_identity,
+            after_directory_fsync=require_parent_identity,
+        )
     finally:
-        os.close(fd)
-    if path.read_bytes() != plan_bytes:
-        raise MnemosyneError("plan readback mismatch")
+        if owns_parent_fd:
+            os.close(parent_fd)
 
 
 def read_owner_only_plan(path: Path) -> bytes:
+    try:
+        path = canonical_plan_path(path)
+    except MnemosyneError as exc:
+        raise MnemosyneError(f"cannot resolve approved plan: {path}") from exc
+    parent_fd = _open_verified_plan_parent(path)
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        fd = os.open(path, flags)
+        fd = os.open(path.name, flags, dir_fd=parent_fd)
     except OSError as exc:
+        os.close(parent_fd)
         raise MnemosyneError(f"cannot open approved plan: {path}") from exc
     try:
         before = os.fstat(fd)
@@ -3851,9 +4001,79 @@ def read_owner_only_plan(path: Path) -> bytes:
             after.st_size,
         ):
             raise MnemosyneError("approved plan changed while reading")
+        _require_plan_parent_identity(path, parent_fd)
         return b"".join(chunks)
     finally:
         os.close(fd)
+        os.close(parent_fd)
+
+
+def read_owner_only_approval_review(path: Path) -> dict[str, Any]:
+    try:
+        review_bytes = read_owner_only_plan(path)
+    except MnemosyneError as exc:
+        raise MnemosyneError(str(exc).replace("approved plan", "approval review")) from exc
+    if len(review_bytes) > 8 * 1024 * 1024:
+        raise MnemosyneError("approval review is too large")
+    try:
+        review = json.loads(review_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MnemosyneError("approval review is invalid") from exc
+    try:
+        validated = _workspace_sync_review_core.validate_approval_review(review)
+    except ValueError as exc:
+        raise MnemosyneError("approval review is invalid") from exc
+    check_safe_content(_workspace_sync_review_core.approval_review_text_values(validated))
+    return validated
+
+
+def render_workspace_sync_approval_card(args: argparse.Namespace) -> int:
+    plan_path = Path(args.render_approval_card).expanduser()
+    plan_bytes = read_owner_only_plan(plan_path)
+    try:
+        plan = json.loads(plan_bytes.decode("utf-8"))
+        validated = _workspace_sync_review_core.validate_workspace_sync_plan_v2(plan)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise MnemosyneError("approved plan cannot render an approval card") from exc
+    review = validated["approval_review"]
+    check_safe_content(
+        [
+            validated["workspace"],
+            validated["workstream"],
+            validated["title"],
+            validated["summary"],
+        ]
+        + _workspace_sync_review_core.approval_review_text_values(review)
+    )
+    print(_workspace_sync_review_core.render_workspace_sync_approval_card(validated), end="")
+    return 0
+
+
+def build_workspace_sync_apply_request(
+    *,
+    root: Path,
+    actor: str,
+    plan_text: str,
+    plan_bytes: bytes,
+    plan_sha256: str,
+    workstream: str,
+) -> Any:
+    contract = _mnemosyne_core.operation_contract
+    return contract.OperationRequest(
+        schema_version=1,
+        operation_kind="memory.workspace_sync",
+        action=contract.LifecycleAction.APPLY,
+        claim_mode=contract.ClaimMode.HISTORICAL,
+        root=str(root),
+        actor=actor,
+        requested_authority=contract.AuthorityMode.WRITE,
+        payload={"plan_text": plan_text},
+        scope={
+            "plan_sha256": plan_sha256,
+            "workstream_id": workstream,
+        },
+        bounds={"max_total_bytes": max(1, len(plan_bytes))},
+    )
 
 
 def apply_workspace_sync_plan(args: argparse.Namespace) -> int:
@@ -3875,21 +4095,13 @@ def apply_workspace_sync_plan(args: argparse.Namespace) -> int:
     workstream = plan.get("workstream")
     if type(workstream) is not str or not workstream:
         raise MnemosyneError("approved plan workstream is invalid")
-    contract = _mnemosyne_core.operation_contract
-    request = contract.OperationRequest(
-        schema_version=1,
-        operation_kind="memory.workspace_sync",
-        action=contract.LifecycleAction.APPLY,
-        claim_mode=contract.ClaimMode.HISTORICAL,
-        root=str(root),
+    request = build_workspace_sync_apply_request(
+        root=root,
         actor=args.actor,
-        requested_authority=contract.AuthorityMode.WRITE,
-        payload={"plan_text": plan_text},
-        scope={
-            "plan_sha256": expected_sha256,
-            "workstream_id": workstream,
-        },
-        bounds={"max_total_bytes": max(1, len(plan_bytes))},
+        plan_text=plan_text,
+        plan_bytes=plan_bytes,
+        plan_sha256=expected_sha256,
+        workstream=workstream,
     )
     outcome = json.loads(_mnemosyne_core.execute_request_bytes(request.canonical_bytes))
     if outcome.get("outcome_kind") != "completed":
@@ -3915,8 +4127,25 @@ def build_history_content(
     title: str,
     summary: str,
     refs: list[str],
+    approval_review: dict[str, Any] | None = None,
 ) -> str:
     source_refs = "\n".join(f"- {ref}" for ref in refs)
+    approval_sections: list[str] = []
+    if approval_review is not None:
+        approval_sections.extend(("## 최신 상태에 반영한 내용", ""))
+        for group in approval_review["current_state_groups"]:
+            approval_sections.extend((f"### {group['title']}", ""))
+            approval_sections.extend(f"- {item}" for item in group["items"])
+            approval_sections.append("")
+        approval_sections.extend(("## 기록으로 남긴 내용", ""))
+        for group in approval_review["history_groups"]:
+            approval_sections.extend((f"### {group['title']}", ""))
+            approval_sections.extend(f"- {item}" for item in group["items"])
+            approval_sections.append("")
+        approval_sections.extend(("## 이번 기록에 포함하지 않은 내용", ""))
+        approval_sections.extend(f"- {exclusion}" for exclusion in approval_review["exclusions"])
+        approval_sections.append("")
+    rendered_approval_sections = "\n".join(approval_sections)
     return f"""---
 schema_version: 1
 event_type: snapshot-update
@@ -3935,6 +4164,7 @@ redaction_policy: sanitized summary and explicit source_refs only
 
 {summary}
 
+{rendered_approval_sections}
 ## Boundary
 
 This sync mutated only files under `{root / "memory" / workspace}`. It did not mutate Jira, Confluence, GitHub, repository source files, runtime state, deployments, graphify output, worktrees, or external services. It does not store raw logs, credentials, tokens, private keys, email values, exact endpoints, raw command output, raw transcript content, or full private bodies.
@@ -3942,12 +4172,16 @@ This sync mutated only files under `{root / "memory" / workspace}`. It did not m
 
 
 def command_memory_sync(args: argparse.Namespace) -> int:
+    if getattr(args, "render_approval_card", None):
+        return render_workspace_sync_approval_card(args)
     if getattr(args, "apply_plan", None):
         return apply_workspace_sync_plan(args)
     if getattr(args, "apply", False):
         raise MnemosyneError("direct --apply was removed; create and approve a Plan")
     if not getattr(args, "plan_out", None):
-        raise MnemosyneError("memory-sync requires --plan-out or --apply-plan")
+        raise MnemosyneError(
+            "memory-sync requires --plan-out, --render-approval-card, or --apply-plan"
+        )
     if not all(type(value) is str and value for value in (args.workspace, args.title, args.summary)):
         raise MnemosyneError("Plan creation requires workspace, title, and summary")
     root = Path(args.root).expanduser().resolve()
@@ -3964,24 +4198,26 @@ def command_memory_sync(args: argparse.Namespace) -> int:
     if not snapshot_path.exists():
         raise MnemosyneError(f"snapshot missing: {snapshot_path}")
 
+    approval_review_path = getattr(args, "approval_review", None)
+    if type(approval_review_path) is not str or not approval_review_path:
+        raise MnemosyneError("Plan creation requires --approval-review")
+    approval_review = read_owner_only_approval_review(Path(approval_review_path).expanduser())
+    review_refs = {reference["ref"] for reference in approval_review["references"]}
+    if len(set(args.ref)) != len(args.ref) or review_refs != set(args.ref):
+        raise MnemosyneError("approval review references must exactly match --ref")
+
     created_at = utc_now()
-    slug = slugify_title(args.title)
-    refs = [f"memory-sync: {slug}", *args.ref]
     workstream = args.workstream or args.workspace
-    history_path = workspace_dir / "history" / f"{timestamp_for_filename(created_at)}-{slug}.md"
 
     if args.plan_out:
+        plan_path = require_plan_outside_memory_root(
+            root,
+            Path(args.plan_out).expanduser(),
+        )
         registry_path = memory_root(root) / "workspaces.yml"
         snapshot_bytes = snapshot_path.read_bytes()
-        updated_snapshot, _ = build_updated_snapshot(
-            snapshot_bytes.decode("utf-8"),
-            created_at,
-            refs,
-            workstream,
-            args.title,
-            args.summary,
-        )
-        history_content = build_history_content(
+        snapshot_text = snapshot_bytes.decode("utf-8")
+        derived_effects = _workspace_sync_review_core.derive_workspace_sync_effects(
             root=root,
             workspace=args.workspace,
             workspace_root=workspace_root,
@@ -3989,15 +4225,23 @@ def command_memory_sync(args: argparse.Namespace) -> int:
             created_at=created_at,
             title=args.title,
             summary=args.summary,
-            refs=refs,
+            approval_review=approval_review,
+            snapshot_text=snapshot_text,
         )
+        workstream_status = derived_effects["workstream_status"]
+        history_path = root / derived_effects["history_path"]
+        updated_snapshot = derived_effects["snapshot_final_text"]
+        history_content = derived_effects["history_final_text"]
         plan = {
-            "schema": "mnemosyne-workspace-sync-plan-v1",
-            "schema_version": 1,
+            "schema": _workspace_sync_review_core.WORKSPACE_SYNC_PLAN_V2_SCHEMA,
+            "schema_version": 2,
             "created_at": created_at,
             "root": str(root),
             "workspace": args.workspace,
             "workstream": workstream,
+            "workstream_status": workstream_status,
+            "title": args.title,
+            "summary": args.summary,
             "claim_mode": "HISTORICAL",
             "sanitization_policy_sha256": sha256_bytes(
                 "\n".join(pattern.pattern for pattern in UNSAFE_CONTENT_PATTERNS).encode("utf-8")
@@ -4020,16 +4264,38 @@ def command_memory_sync(args: argparse.Namespace) -> int:
                     "final_sha256": sha256_bytes(updated_snapshot.encode("utf-8")),
                 },
             ],
+            "approval_review": approval_review,
         }
+        try:
+            _workspace_sync_review_core.validate_workspace_sync_plan_v2(plan)
+        except ValueError as exc:
+            raise MnemosyneError("workspace sync Plan is invalid") from exc
         plan_bytes = canonical_json_bytes(plan) + b"\n"
-        plan_path = Path(args.plan_out).expanduser()
+        if len(plan_bytes) > MAX_WORKSPACE_SYNC_PLAN_BYTES:
+            raise MnemosyneError("workspace sync Plan is too large")
+        plan_sha256 = sha256_bytes(plan_bytes)
+        request = build_workspace_sync_apply_request(
+            root=root,
+            actor=args.actor,
+            plan_text=plan_bytes.decode("utf-8"),
+            plan_bytes=plan_bytes,
+            plan_sha256=plan_sha256,
+            workstream=workstream,
+        )
+        if (
+            len(request.canonical_bytes)
+            > _mnemosyne_core.operation_contract.MAX_OPERATION_REQUEST_BYTES
+        ):
+            raise MnemosyneError(
+                "workspace sync Plan exceeds operation request transport limit"
+            )
         write_owner_only_plan(plan_path, plan_bytes)
         print("mode: memory-sync plan")
         print(f"workspace: {args.workspace}")
         print(f"history: {history_path}")
         print(f"snapshot: {snapshot_path}")
         print(f"plan: {plan_path}")
-        print(f"plan_sha256: {sha256_bytes(plan_bytes)}")
+        print(f"plan_sha256: {plan_sha256}")
         print("writes: none")
         return 0
 
@@ -7405,8 +7671,10 @@ def build_parser() -> argparse.ArgumentParser:
     memory_sync.add_argument("--summary")
     memory_sync.add_argument("--ref", action="append", default=[])
     memory_sync.add_argument("--workstream")
+    memory_sync.add_argument("--approval-review")
     memory_sync_mode = memory_sync.add_mutually_exclusive_group(required=True)
     memory_sync_mode.add_argument("--plan-out")
+    memory_sync_mode.add_argument("--render-approval-card")
     memory_sync_mode.add_argument("--apply-plan")
     memory_sync.add_argument("--expected-plan-sha256")
     memory_sync.add_argument("--actor", default="local-operator")

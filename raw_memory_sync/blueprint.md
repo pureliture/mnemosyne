@@ -29,3 +29,15 @@ The package is a source/static contract.  Its build and fixture checks prove
 projection parity and executor fixture behaviour; they do not claim an
 installed target's runtime support, registration loading, hook execution, or
 live raw-memory success.
+
+Before a workspace-sync PLAN is sealed, the agent writes one owner-only
+`mnemosyne-workspace-sync-approval-review-v1` JSON input.  The executor seals
+that data in a v2 PLAN, renders the fixed Korean outer headings from it, and
+retains every supplied group without a display-time bullet budget.  The PLAN
+effects persist the current-state and history groups, so the approval card does
+not promise detail that the approved write omits.  The PLAN output stays outside
+raw memory in an owner-only, no-symlink parent directory.  Creation preflights
+the canonical APPLY transport bound, and apply re-derives the exact
+snapshot/history effect texts from the sealed review and captured bases before
+publishing either file.  The card also displays the sealed record timestamp
+that determines those effect timestamps and history filename.

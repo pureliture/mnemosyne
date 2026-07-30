@@ -52,7 +52,7 @@ class MnemosyneM1IntegrationTest(unittest.TestCase):
             for _name, relative_path, _package in mnemosyne.RUNTIME_MODULE_CLOSURE
         ]
         self.assertEqual(
-            runtime_paths[:24],
+            runtime_paths[:25],
             [
                 "__init__.py",
                 "canonical_json.py",
@@ -67,6 +67,7 @@ class MnemosyneM1IntegrationTest(unittest.TestCase):
                 "librarian_projection.py",
                 "operation_control/__init__.py",
                 "operation_control/catalog.py",
+                "workspace_sync_review.py",
                 "authority_runtime/__init__.py",
                 "control.py",
                 "ledger_schema.py",
@@ -81,7 +82,7 @@ class MnemosyneM1IntegrationTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            runtime_paths[24:],
+            runtime_paths[25:],
             [
                 "classification.py",
                 "routing_risk.py",

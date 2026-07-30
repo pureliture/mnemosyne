@@ -7,10 +7,26 @@ capability outside Mnemosyne or imply another owner.
 ## Mission and execution binding
 
 Prepare one sealed PLAN from sanitized local context.  Before approval, make no
-memory write.  Create it only with:
+memory write.  First create one owner-only (`0600`) JSON approval review using
+the `mnemosyne-workspace-sync-approval-review-v1` shape in canonical
+`SKILL.md`.  It must have a non-empty overview, current-state groups,
+history groups, exclusions, and role-labeled references.  Each `ref` must match
+one `--ref` value exactly.
+
+Create the PLAN only with:
 
 ```text
-mnemosyne-control memory-sync --plan-out <plan> ...
+mnemosyne-control memory-sync --plan-out <plan> --approval-review <review.json> ...
+```
+
+Choose `<plan>` outside `<root>/memory`, and keep both `<plan>` and
+`<review.json>` in pre-existing owner-only directories with no symlink component;
+PLAN creation must not write an unapproved file into raw memory.
+
+Render the approval request only from the sealed PLAN:
+
+```text
+mnemosyne-control memory-sync --render-approval-card <plan>
 ```
 
 After the user approves that retained exact plan, apply the unchanged file only
@@ -61,10 +77,20 @@ unapproved raw transcript, unclear snapshot/history boundary, registry or
 snapshot hash conflict, or missing/invalid batch workstream ID.  Do not dump
 debug logs.  Warnings may remain brief.
 
-For a ready PLAN, emit only the Korean card defined in canonical `SKILL.md`.
-It has a section for each workstream with separate snapshot/history effects,
-uses short plain Korean suitable for a 15-year-old, includes sanitized refs and
-other changes, hides PLAN identity by default, and ends exactly
+For a ready PLAN, emit only the Korean Markdown returned by
+`--render-approval-card`; do not rewrite, shorten, regroup, or append another
+summary.  It keeps `한눈에 보기` at the top, then fixed sections named
+`최신 상태에 반영할 내용`, `기록으로 남길 내용`,
+`이번 기록에 포함하지 않는 내용`, `참고 자료`, and `그 밖의 변경`.
+
+Keep those outer headings fixed, but use as many natural-language subgroups and
+bullets as the evidence requires.  A small path update can stay short.  A
+multi-evidence or long session must retain its facts, user decisions,
+unverified runtime boundaries, investigation scope, history corrections, and
+discarded proposals in separately titled groups; do not collapse them into one
+or two sentences.  Never present source or CI evidence as runtime proof.
+
+The rendered card hides PLAN identity by default and ends exactly
 `이 내용 그대로 적용할까요?`.
 
 After apply, report only status, workspace, workstream, snapshot-changed flag,
