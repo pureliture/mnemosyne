@@ -17,6 +17,11 @@ python3 scripts/raw_memory_sync_install.py --home-root /tmp/mnemosyne-home
 python3 scripts/raw_memory_sync_install.py --home-root /tmp/mnemosyne-home --check
 ```
 
+The same installer also projects the read-only `raw-memory-audit` package from
+`raw_memory_audit/` to Codex, Claude, and Hermes. Audit results stay in the
+active conversation and never edit raw memory; corrections return to the
+separate approval-gated sync flow.
+
 When a local `mnemosyne-control` command is needed, add `--install-launcher`.
 The installer then writes both `.local/bin/mnemosyne-control` and its
 owner-only lock-migration manifest at

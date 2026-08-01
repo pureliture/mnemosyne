@@ -15,6 +15,10 @@ the current workspace, including `/raw-memory-sync`.  Accepted hints are
 `.raw-memory-ignore`, `--workstream <id>`, a structured handoff path, and a
 sanitized outcome summary.
 
+Use `raw-memory-audit` instead when the user asks only whether an existing
+memory is accurate or current. An audit request must not create a review, PLAN,
+or memory write.
+
 ## Boundaries
 
 - Do not write `~/raw/memory` directly, call raw external APIs, or mutate Jira,
@@ -27,6 +31,9 @@ sanitized outcome summary.
   tokens, emails, credentials, and secret-like values out of output and stored
   context.  Store a transcript summary unless the user explicitly approves raw
   transcript storage.
+- Store each factual approval-review item as one complete standalone plain-text
+  sentence expressing one fact. Split a historical event or decision from any
+  claim about what is currently true, even when they are closely related.
 - Apply base safety skips, `.raw-memory-ignore`, and `--exclude` before
   candidate discovery.  Report ignored candidates as metadata only, grouped by
   ignore source.  An explicit include can override only ignore/exclude matches,
@@ -71,6 +78,22 @@ value exactly and needs a role that explains why a reader should consult it.
 
 The outer card hierarchy is fixed, but its groups and bullet count are not.
 Never compress a long, multi-evidence session into one summary sentence.
+
+Every item in `current_state_groups` and `history_groups` is an auditable memory
+sentence:
+
+- Write one fact per item in plain language; do not depend on the group title
+  to complete its meaning.
+- Put historical events and past decisions in their own sentences. Put current
+  assertions in separate sentences so a later audit can judge freshness
+  independently.
+- In the history groups, summarize which evidence the source session actually
+  observed and what remained unverified. Keep this summary readable and
+  sanitized; never copy a raw transcript, command output, log, or private body.
+- Use readable session and evidence references when available. Hashes remain
+  internal operation bindings, not prose that a future reader must understand.
+- The overview, title, and summary may summarize the items but must not add a
+  factual claim that is absent from the auditable items.
 
 - A simple path or link update may have one compact group in each area.
 - Use a detailed evidence ledger when two or more evidence sources are
@@ -133,8 +156,9 @@ The card always has this reader-facing structure:
 이 내용 그대로 적용할까요?
 ```
 
-Keep the PLAN SHA-256 internally; do not ask the user to copy it or show it
-unless audit or diagnosis requires it.  After unambiguous approval, apply only
-that exact PLAN.  Read back the returned snapshot, history, and receipt paths.
-Report sync ID as the receipt's `plan_sha256` (the approved PLAN SHA-256).  If
-a base or PLAN changed, stop and create a new PLAN when appropriate.
+Keep the PLAN SHA-256 internally; do not ask the user to copy it or use it in an
+approval card, audit candidate, or normal audit result. After unambiguous
+approval, apply only that exact PLAN. Read back the returned snapshot, history,
+and receipt paths. After apply, report the receipt's `plan_sha256` only as the
+existing sync ID. If a base or PLAN changed, stop and create a new PLAN when
+appropriate.

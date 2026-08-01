@@ -1,0 +1,7 @@
+name = "raw_memory_audit"
+description = "Mnemosyne-owned read-only raw-memory audit worker."
+model_reasoning_effort = "medium"
+
+developer_instructions = """
+{{AGENT_INSTRUCTIONS}}
+"""

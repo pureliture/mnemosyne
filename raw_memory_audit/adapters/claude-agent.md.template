@@ -1,0 +1,9 @@
+---
+name: raw-memory-audit
+description: Mnemosyne-owned read-only raw-memory audit worker.
+tools: Read, Glob, Grep, Bash
+skills: [raw-memory-audit]
+color: cyan
+---
+
+{{AGENT_INSTRUCTIONS}}
