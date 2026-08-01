@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, install, or statically check Mnemosyne raw-memory-sync projections."""
+"""Build, install, or statically check Mnemosyne raw-memory projections."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import secrets
 import stat
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = REPOSITORY_ROOT / "raw_memory_sync"
 SCRIPTS_ROOT = REPOSITORY_ROOT / "scripts"
 if str(SCRIPTS_ROOT) in sys.path:
     sys.path.remove(str(SCRIPTS_ROOT))
@@ -28,80 +28,137 @@ if Path(mnemosyne.__file__ or "").resolve() != (SCRIPTS_ROOT / "mnemosyne.py").r
     raise RuntimeError("raw-memory-sync installer did not load the canonical Mnemosyne writer")
 
 
-REGISTRATION_BEGIN = "# BEGIN Mnemosyne raw-memory-sync managed registration\n"
-REGISTRATION_END = "# END Mnemosyne raw-memory-sync managed registration\n"
-LEGACY_HEADER = re.compile(
-    r'^\[agents\."raw_memory_sync"\][ \t]*(?:#.*)?(?:\n|$)', re.MULTILINE
-)
-LEGACY_MENTION_HEADER = re.compile(
-    r'^\s*\[[^\n]*agents\."raw_memory_sync"[^\n]*$', re.MULTILINE
-)
 TOML_TABLE_HEADER = re.compile(
     r'^\s*\[\[?[^\n]*\]\]?[ \t]*(?:#.*)?(?:\n|$)', re.MULTILINE
 )
 
 
-def read_source(name: str) -> str:
-    return (PACKAGE_ROOT / name).read_text(encoding="utf-8")
+@dataclass(frozen=True)
+class ManagedPackage:
+    source_directory: str
+    skill_name: str
+    agent_name: str
+    description: str
+    include_hermes_skill: bool = False
+
+    @property
+    def source_root(self) -> Path:
+        return REPOSITORY_ROOT / self.source_directory
+
+    @property
+    def registration_begin(self) -> str:
+        return f"# BEGIN Mnemosyne {self.skill_name} managed registration\n"
+
+    @property
+    def registration_end(self) -> str:
+        return f"# END Mnemosyne {self.skill_name} managed registration\n"
+
+    @property
+    def legacy_header(self) -> re.Pattern[str]:
+        return re.compile(
+            rf'^\[agents\."{re.escape(self.agent_name)}"\][ \t]*(?:#.*)?(?:\n|$)',
+            re.MULTILINE,
+        )
+
+    @property
+    def legacy_mention_header(self) -> re.Pattern[str]:
+        return re.compile(
+            rf'^\s*\[[^\n]*agents\."{re.escape(self.agent_name)}"[^\n]*$',
+            re.MULTILINE,
+        )
+
+
+RAW_MEMORY_SYNC = ManagedPackage(
+    source_directory="raw_memory_sync",
+    skill_name="raw-memory-sync",
+    agent_name="raw_memory_sync",
+    description="Mnemosyne-owned approval-gated raw-memory sync worker.",
+)
+RAW_MEMORY_AUDIT = ManagedPackage(
+    source_directory="raw_memory_audit",
+    skill_name="raw-memory-audit",
+    agent_name="raw_memory_audit",
+    description="Mnemosyne-owned read-only raw-memory audit worker.",
+    include_hermes_skill=True,
+)
+MANAGED_PACKAGES = (RAW_MEMORY_SYNC, RAW_MEMORY_AUDIT)
+
+
+def read_source(package: ManagedPackage, name: str) -> str:
+    return (package.source_root / name).read_text(encoding="utf-8")
 
 
 def rendered_outputs(home_root: Path) -> dict[Path, str]:
-    skill = read_source("SKILL.md")
-    agent = read_source("agent.md")
-    codex_template = read_source("adapters/codex-agent.toml.template")
-    claude_template = read_source("adapters/claude-agent.md.template")
-    return {
-        home_root / ".codex" / "skills" / "raw-memory-sync" / "SKILL.md": skill,
-        home_root / ".codex" / "agents" / "raw_memory_sync.toml": codex_template.replace(
-            "{{AGENT_INSTRUCTIONS}}", agent
-        ),
-        home_root / ".claude" / "skills" / "raw-memory-sync" / "SKILL.md": skill,
-        home_root / ".claude" / "agents" / "raw-memory-sync.md": claude_template.replace(
-            "{{AGENT_INSTRUCTIONS}}", agent
-        ),
-    }
+    outputs: dict[Path, str] = {}
+    for package in MANAGED_PACKAGES:
+        skill = read_source(package, "SKILL.md")
+        agent = read_source(package, "agent.md")
+        codex_template = read_source(package, "adapters/codex-agent.toml.template")
+        claude_template = read_source(package, "adapters/claude-agent.md.template")
+        outputs.update(
+            {
+                home_root / ".codex" / "skills" / package.skill_name / "SKILL.md": skill,
+                home_root / ".codex" / "agents" / f"{package.agent_name}.toml": codex_template.replace(
+                    "{{AGENT_INSTRUCTIONS}}", agent
+                ),
+                home_root / ".claude" / "skills" / package.skill_name / "SKILL.md": skill,
+                home_root / ".claude" / "agents" / f"{package.skill_name}.md": claude_template.replace(
+                    "{{AGENT_INSTRUCTIONS}}", agent
+                ),
+            }
+        )
+        if package.include_hermes_skill:
+            outputs[home_root / ".hermes" / "skills" / package.skill_name / "SKILL.md"] = skill
+    return outputs
 
 
-def registration_block() -> str:
+def registration_block(package: ManagedPackage) -> str:
     return (
-        REGISTRATION_BEGIN
-        + '[agents."raw_memory_sync"]\n'
-        + 'description = "Mnemosyne-owned approval-gated raw-memory sync worker."\n'
-        + 'config_file = "agents/raw_memory_sync.toml"\n'
-        + 'nickname_candidates = ["raw_memory_sync"]\n'
-        + REGISTRATION_END
+        package.registration_begin
+        + f'[agents."{package.agent_name}"]\n'
+        + f'description = "{package.description}"\n'
+        + f'config_file = "agents/{package.agent_name}.toml"\n'
+        + f'nickname_candidates = ["{package.agent_name}"]\n'
+        + package.registration_end
     )
 
 
-def rendered_config(existing: str) -> str:
-    begin_count = existing.count(REGISTRATION_BEGIN)
-    end_count = existing.count(REGISTRATION_END)
+def rendered_registration(existing: str, package: ManagedPackage) -> str:
+    begin_count = existing.count(package.registration_begin)
+    end_count = existing.count(package.registration_end)
     if begin_count != end_count or begin_count > 1:
-        raise ValueError("raw-memory-sync managed registration markers are malformed")
+        raise ValueError(f"{package.skill_name} managed registration markers are malformed")
     if begin_count:
-        start = existing.index(REGISTRATION_BEGIN)
-        end = existing.index(REGISTRATION_END, start) + len(REGISTRATION_END)
-        unmanaged_legacy = LEGACY_HEADER.findall(existing[:start] + existing[end:])
+        start = existing.index(package.registration_begin)
+        end = existing.index(package.registration_end, start) + len(package.registration_end)
+        unmanaged_legacy = package.legacy_header.findall(existing[:start] + existing[end:])
         if unmanaged_legacy:
-            raise ValueError("unmanaged legacy raw-memory-sync registration remains")
-        return existing[:start] + registration_block() + existing[end:]
+            raise ValueError(f"unmanaged legacy {package.skill_name} registration remains")
+        return existing[:start] + registration_block(package) + existing[end:]
 
-    legacy_headers = list(LEGACY_HEADER.finditer(existing))
-    legacy_mention_headers = list(LEGACY_MENTION_HEADER.finditer(existing))
+    legacy_headers = list(package.legacy_header.finditer(existing))
+    legacy_mention_headers = list(package.legacy_mention_header.finditer(existing))
     if len(legacy_mention_headers) != len(legacy_headers):
-        raise ValueError("legacy raw-memory-sync table header is malformed")
+        raise ValueError(f"legacy {package.skill_name} table header is malformed")
     if len(legacy_headers) > 1:
-        raise ValueError("legacy raw-memory-sync registration is ambiguous")
+        raise ValueError(f"legacy {package.skill_name} registration is ambiguous")
     if legacy_headers:
         header = legacy_headers[0]
         next_header = TOML_TABLE_HEADER.search(existing, header.end())
         table_end = next_header.start() if next_header else len(existing)
-        return existing[:header.start()] + registration_block() + existing[table_end:]
+        return existing[:header.start()] + registration_block(package) + existing[table_end:]
 
     prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
     if prefix and not prefix.endswith("\n\n"):
         prefix += "\n"
-    return prefix + registration_block()
+    return prefix + registration_block(package)
+
+
+def rendered_config(existing: str) -> str:
+    rendered = existing
+    for package in MANAGED_PACKAGES:
+        rendered = rendered_registration(rendered, package)
+    return rendered
 
 
 def write_atomic(path: Path, content: str) -> None:

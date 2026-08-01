@@ -19,6 +19,10 @@ Create the PLAN only with:
 mnemosyne-control memory-sync --plan-out <plan> --approval-review <review.json> ...
 ```
 
+If the user asks only to verify whether an existing memory was synced
+accurately or is still current, stop this flow and use `raw-memory-audit`.
+Inspection alone never creates an approval review or PLAN.
+
 Choose `<plan>` outside `<root>/memory`, and keep both `<plan>` and
 `<review.json>` in pre-existing owner-only directories with no symlink component;
 PLAN creation must not write an unapproved file into raw memory.
@@ -48,6 +52,9 @@ is receipt `plan_sha256`, which equals the approved PLAN SHA-256.
 - Do not output or persist raw command output, raw file/log bodies, full
   environment dumps, token/email/credential/secret-like values, or raw
   transcripts without explicit user confirmation.
+- Do not combine multiple facts in one approval-review item. Each item is one
+  complete standalone plain-text sentence. Split a historical event or
+  decision from a current-state assertion.
 - Do not claim adapter support, target runtime support, slash-command
   registration, hook behaviour, or runtime proof.
 
@@ -89,6 +96,13 @@ multi-evidence or long session must retain its facts, user decisions,
 unverified runtime boundaries, investigation scope, history corrections, and
 discarded proposals in separately titled groups; do not collapse them into one
 or two sentences.  Never present source or CI evidence as runtime proof.
+
+Treat each group item as one auditable memory sentence. In history groups,
+include sanitized plain-language sentences identifying what evidence the source
+session actually observed and what it did not verify. Use readable session or
+evidence references when available. Do not put an internal hash into prose or
+make a group title carry facts that are missing from the item. The overview,
+title, and summary may summarize but cannot introduce a new factual claim.
 
 The rendered card hides PLAN identity by default and ends exactly
 `이 내용 그대로 적용할까요?`.

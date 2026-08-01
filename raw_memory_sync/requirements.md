@@ -15,6 +15,10 @@ not confer delegation or ownership outside Mnemosyne.
    output, raw file or log bodies, environment dumps, credentials, tokens,
    email values, or secret-like values.  Store transcript summaries by default;
    raw transcripts require explicit approval.
+   Every factual approval-review item is one complete standalone plain-text
+   sentence expressing one fact. Historical facts and current assertions are
+   separate items. History groups preserve a sanitized plain-language summary
+   of the evidence the source session observed and what remained unverified.
 3. Require interactive workstream selection unless batch mode has an explicit
    valid workstream id.  Branches, worktrees, tickets, pages, and PRs are
    references, not split keys.
@@ -41,6 +45,8 @@ not confer delegation or ownership outside Mnemosyne.
 7. Generated Codex and Claude projections must be derived from the same
    canonical skill and agent sources, contain the `mnemosyne-control` binding,
    and make no runtime-support claim.
+8. Read-only inspection of an existing memory belongs to `raw-memory-audit`.
+   It must not enter this package's review, PLAN, approval, or apply flow.
 
 ## Approval-card contract
 

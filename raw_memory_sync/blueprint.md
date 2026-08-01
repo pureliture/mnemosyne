@@ -9,8 +9,8 @@
 4. `adapters/` supplies thin Codex and Claude envelopes; the installer renders
    them into user-home projections.
 
-The installer is source-owned and has exactly these managed outputs under a
-chosen home root:
+For this package, the source-owned shared installer has exactly these managed
+outputs under a chosen home root:
 
 ```text
 .codex/skills/raw-memory-sync/SKILL.md
@@ -19,6 +19,9 @@ chosen home root:
 .claude/skills/raw-memory-sync/SKILL.md
 .claude/agents/raw-memory-sync.md
 ```
+
+The same installer also owns the separately listed `raw-memory-audit`
+projections in that package's blueprint.
 
 With `--install-launcher`, it additionally creates
 `.local/bin/mnemosyne-control` only when the destination is absent or already
@@ -37,6 +40,12 @@ The package is a source/static contract.  Its build and fixture checks prove
 projection parity and executor fixture behaviour; they do not claim an
 installed target's runtime support, registration loading, hook execution, or
 live raw-memory success.
+
+Each approval-review item is one standalone plain-text fact. Past facts and
+current assertions are separate items, and history groups retain sanitized
+plain-language evidence summaries plus readable references for later audit.
+The sibling `raw-memory-audit` package consumes those boundaries read-only; it
+does not change this package's PLAN, receipt, or executor schemas.
 
 Before a workspace-sync PLAN is sealed, the agent writes one owner-only
 `mnemosyne-workspace-sync-approval-review-v1` JSON input.  The executor seals
