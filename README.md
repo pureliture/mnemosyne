@@ -33,7 +33,8 @@
 
 Mnemosyne은 문서, 노트, 메모가 쌓이는 `~/raw`를 Workstream 단위로 점검하고,
 이동 제안을 검토 가능한 canonical request로 만든 뒤, 사람이 승인한 정확한 요청만
-실행합니다. 저장된 workspace memory의 동기화와 감사도 같은 원칙 아래 제공합니다.
+실행합니다. 저장된 workspace memory의 동기화·감사와 읽기 전용 조회도 같은 원칙 아래
+제공합니다.
 “정리해 줘”처럼 범위가 넓거나 모호한 말은 파일 이동이나 memory 변경 권한으로
 해석하지 않습니다.
 
@@ -174,13 +175,15 @@ effect와 결과를 먼저 보여주고, 사용자의 `전체 승인`을 exact P
 
 ## 공개 인터페이스
 
-Mnemosyne은 서로 다른 권한을 가진 세 capability surface를 제공합니다.
+Mnemosyne은 서로 다른 권한을 가진 다섯 capability surface를 제공합니다.
 
 | Surface | 역할 | 기본 effect |
 |---|---|---|
 | Safe Librarian Curation | Workstream을 점검하고 문서 placement를 제안·결정·실행합니다. | 점검과 제안은 없음, 승인된 placement만 이동 |
 | `raw-memory-sync` | workspace context를 sealed PLAN과 approval review로 동기화합니다. | 명시적 승인 전 없음 |
 | `raw-memory-audit` | 저장된 memory 한 문장의 동기화 정확성과 현재 최신성을 각각 판단합니다. | 항상 없음 |
+| `lookup-raw-project-context` | 프로젝트 개발·코드 질문 전에 관련 raw 맥락을 조회하고, 이어서 현재 코드로 구현 사실을 확인합니다. | 항상 없음 |
+| `collect-raw-sync-history` | raw repository에서 지정 날짜 구간에 동기화된 작업 목록을 조회합니다. | 항상 없음 |
 
 ### Curation CLI
 
@@ -226,6 +229,30 @@ Audit 결과는 현재 대화에만 남으며 report, cache, correction proposal
 않습니다. 잘못됐거나 오래된 문장을 발견해도 자동 수정하지 않습니다. 수정은 사용자가
 별도로 요청한 `raw-memory-sync`의 기존 승인 절차로 돌아갑니다.
 
+### Raw Query Skills
+
+[`lookup_raw_project_context/SKILL.md`](./lookup_raw_project_context/SKILL.md)와
+[`collect_raw_sync_history/SKILL.md`](./collect_raw_sync_history/SKILL.md)는 모두 읽기
+전용입니다. 전자는 사용자 수준에서 Codex와 Hermes에 projection되며, raw 맥락은 코드
+탐색의 안내일 뿐 현재 구현 사실은 항상 현재 코드가 source of truth입니다. 후자는 지정한
+raw root의 `.agents/skills`에만 projection됩니다.
+
+Hermes는 raw-owned projection을 기본 config와 이미 존재하는 `mnemosyne` profile의
+제한된 `skills.external_dirs` 항목으로 발견합니다. user-global Codex·Claude·Hermes
+collect copy는 만들지 않습니다.
+
+```bash
+mnemosyne-control context lookup-project-context \
+  --project-root <project-root> --question <question> \
+  --task-context <task-context> --json --root <raw-root>
+
+mnemosyne-control context collect-sync-history \
+  --from-date YYYY-MM-DD --to-date YYYY-MM-DD \
+  --json --root <raw-root>
+```
+
+두 조회 결과는 쓰기 권한이나 runtime 사실을 증명하지 않습니다.
+
 <br/>
 
 ## 읽기 전용으로 시작하기
@@ -264,19 +291,22 @@ uv run --no-project scripts/mnemosyne.py \
 
 ### Skill projection 점검
 
-설치 대상과 분리된 임시 home root에 `raw-memory-sync`와 `raw-memory-audit` projection을
-만들고 동일한 installer의 check mode로 검증할 수 있습니다.
+설치 대상과 분리된 임시 home root에 sync·audit와 user-level project-context
+projection을 만들 수 있습니다. 준비된 `--raw-root`를 함께 주면 raw-only sync-history
+projection과 Hermes external discovery 설정도 동일한 installer의 check mode로
+검증합니다.
 
 ```bash
 uv run --no-project scripts/raw_memory_sync_install.py \
-  --home-root /tmp/mnemosyne-home
+  --home-root /tmp/mnemosyne-home --raw-root /tmp/raw
 
 uv run --no-project scripts/raw_memory_sync_install.py \
-  --home-root /tmp/mnemosyne-home --check
+  --home-root /tmp/mnemosyne-home --raw-root /tmp/raw --check
 ```
 
-첫 명령은 지정한 root에 Codex·Claude용 sync projection과 Codex·Claude·Hermes용 audit
-projection을 생성합니다. 실제 사용자 home에 설치하는 일은 별도의 명시적 선택입니다.
+첫 명령은 Codex·Claude용 sync, Codex·Claude·Hermes용 audit, Codex·Hermes용
+project-context projection을 만들고, sync-history는 `/tmp/raw/.agents/skills`에만
+생성합니다. 실제 사용자 home에 설치하는 일은 별도의 명시적 선택입니다.
 
 Local `mnemosyne-control` launcher도 함께 설치하려면 준비된 home root에
 `--install-launcher`를 추가합니다. 이 옵션은 `.local/bin/mnemosyne-control`과 owner-only
@@ -298,7 +328,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=scripts \
 |---|---|
 | Python requirement | `>=3.10` |
 | Test framework | standard-library `unittest` |
-| Local full suite | 2026-08-02: 1,617 tests 실행, `OK (skipped=1)` |
+| Local full suite | 2026-08-02: 1,650 tests 실행, `OK (skipped=1)` |
 
 <br/>
 
@@ -308,12 +338,15 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=scripts \
 |---|---|---|
 | `scripts/mnemosyne.py` | CLI 진입점과 runtime module closure | 예 |
 | `scripts/mnemosyne_core/` | policy, inventory, review, durable state, placement safety | 예 |
+| `scripts/mnemosyne_core/raw_memory_query.py` | 두 query CLI의 공유 읽기 전용 query core | 예 |
 | `scripts/mnemosyne-control` | local control launcher source | 예 |
-| `scripts/raw_memory_sync_install.py` | sync·audit projection과 launcher installer | 예 |
+| `scripts/raw_memory_sync_install.py` | sync·audit·query skill projection과 launcher installer | 예 |
 | `tests/` | public contract, safety, recovery, concurrency 검증 | 예 |
 | `SKILL.md` | Safe Librarian 대화 규칙과 승인 흐름의 canonical source | 예 |
 | `raw_memory_sync/` | approval-gated workspace sync package source | 예 |
 | `raw_memory_audit/` | read-only memory audit package source | 예 |
+| `lookup_raw_project_context/` | user-level project-context query skill canonical source | 예 |
+| `collect_raw_sync_history/` | raw-root-only sync-history query skill canonical source | 예 |
 | `references/` | 공개 가능한 layout와 milestone reference | 예 |
 | `agents/openai.yaml` | 외부 agent interface 선언 | 예 |
 | `~/raw/**` | 사용자의 document corpus와 runtime authority | 아니요 |
@@ -334,6 +367,8 @@ mnemosyne/
 ├── assets/
 │   ├── architecture.svg
 │   └── safety-flow.svg
+├── collect_raw_sync_history/
+├── lookup_raw_project_context/
 ├── raw_memory_audit/
 ├── raw_memory_sync/
 ├── references/
@@ -341,6 +376,7 @@ mnemosyne/
 │   ├── mnemosyne-control
 │   ├── mnemosyne.py
 │   ├── mnemosyne_core/
+│   │   └── raw_memory_query.py
 │   └── raw_memory_sync_install.py
 ├── tests/
 ├── pyproject.toml

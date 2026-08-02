@@ -1,0 +1,6 @@
+interface:
+  display_name: "Raw 프로젝트 맥락"
+  short_description: "코드 탐색 전 관련 raw 맥락을 조회합니다"
+  default_prompt: "Use $lookup-raw-project-context to find raw context before examining this project's current code."
+policy:
+  allow_implicit_invocation: true

@@ -84,6 +84,34 @@ RAW_MEMORY_AUDIT = ManagedPackage(
 MANAGED_PACKAGES = (RAW_MEMORY_SYNC, RAW_MEMORY_AUDIT)
 
 
+@dataclass(frozen=True)
+class SkillProjection:
+    """A skill-only projection that does not participate in agent registration."""
+
+    source_directory: str
+    skill_name: str
+    include_hermes_user_skill: bool = False
+
+    @property
+    def source_root(self) -> Path:
+        return REPOSITORY_ROOT / self.source_directory
+
+
+LOOKUP_RAW_PROJECT_CONTEXT = SkillProjection(
+    source_directory="lookup_raw_project_context",
+    skill_name="lookup-raw-project-context",
+    include_hermes_user_skill=True,
+)
+COLLECT_RAW_SYNC_HISTORY = SkillProjection(
+    source_directory="collect_raw_sync_history",
+    skill_name="collect-raw-sync-history",
+)
+
+HERMES_EXTERNAL_DIRS_BEGIN = "# BEGIN Mnemosyne query skill external dirs"
+HERMES_EXTERNAL_DIRS_END = "# END Mnemosyne query skill external dirs"
+HERMES_PROFILE_NAME = "mnemosyne"
+
+
 def read_source(package: ManagedPackage, name: str) -> str:
     return (package.source_root / name).read_text(encoding="utf-8")
 
@@ -110,6 +138,347 @@ def rendered_outputs(home_root: Path) -> dict[Path, str]:
         if package.include_hermes_skill:
             outputs[home_root / ".hermes" / "skills" / package.skill_name / "SKILL.md"] = skill
     return outputs
+
+
+def read_skill_projection_source(projection: SkillProjection, name: str) -> str:
+    source = projection.source_root / name
+    try:
+        return source.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ValueError(f"skill projection source is missing: {source}") from exc
+
+
+def rendered_skill_outputs(
+    home_root: Path, *, raw_root: Path | None
+) -> dict[Path, str]:
+    """Render skill-only projections without adding agent/config/Claude surfaces."""
+    lookup_skill = read_skill_projection_source(LOOKUP_RAW_PROJECT_CONTEXT, "SKILL.md")
+    lookup_agent = read_skill_projection_source(
+        LOOKUP_RAW_PROJECT_CONTEXT, "agents/openai.yaml"
+    )
+    outputs = {
+        home_root
+        / ".codex"
+        / "skills"
+        / LOOKUP_RAW_PROJECT_CONTEXT.skill_name
+        / "SKILL.md": lookup_skill,
+        home_root
+        / ".codex"
+        / "skills"
+        / LOOKUP_RAW_PROJECT_CONTEXT.skill_name
+        / "agents"
+        / "openai.yaml": lookup_agent,
+    }
+    if LOOKUP_RAW_PROJECT_CONTEXT.include_hermes_user_skill:
+        outputs[
+            home_root
+            / ".hermes"
+            / "skills"
+            / LOOKUP_RAW_PROJECT_CONTEXT.skill_name
+            / "SKILL.md"
+        ] = lookup_skill
+    if raw_root is None:
+        return outputs
+
+    collect_skill = read_skill_projection_source(COLLECT_RAW_SYNC_HISTORY, "SKILL.md")
+    collect_agent = read_skill_projection_source(
+        COLLECT_RAW_SYNC_HISTORY, "agents/openai.yaml"
+    )
+    outputs.update(
+        {
+            raw_root
+            / ".agents"
+            / "skills"
+            / COLLECT_RAW_SYNC_HISTORY.skill_name
+            / "SKILL.md": collect_skill,
+            raw_root
+            / ".agents"
+            / "skills"
+            / COLLECT_RAW_SYNC_HISTORY.skill_name
+            / "agents"
+            / "openai.yaml": collect_agent,
+        }
+    )
+    return outputs
+
+
+def _yaml_indent(line: str) -> int:
+    prefix = line[: len(line) - len(line.lstrip(" \t"))]
+    if "\t" in prefix:
+        raise ValueError("Hermes skills.external_dirs indentation contains a tab")
+    return len(prefix)
+
+
+def _yaml_sequence_scalar(line: str, *, path: Path) -> str:
+    match = re.match(r"^\s*-\s+(.+?)\s*$", line)
+    if match is None:
+        raise ValueError(f"Hermes skills.external_dirs is not a scalar list: {path}")
+    raw = re.split(r"\s+#", match.group(1), maxsplit=1)[0].strip()
+    if not raw:
+        raise ValueError(f"Hermes skills.external_dirs contains an empty item: {path}")
+    if raw.startswith('"'):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Hermes skills.external_dirs contains an invalid quoted path: {path}"
+            ) from exc
+        if not isinstance(value, str):
+            raise ValueError(
+                f"Hermes skills.external_dirs contains a non-string item: {path}"
+            )
+        return value
+    if raw.startswith("'"):
+        if len(raw) < 2 or not raw.endswith("'"):
+            raise ValueError(
+                f"Hermes skills.external_dirs contains an invalid quoted path: {path}"
+            )
+        return raw[1:-1].replace("''", "'")
+    if raw[0] in "[{" or raw[-1] in "]}":
+        raise ValueError(f"Hermes skills.external_dirs is not a scalar list: {path}")
+    return raw
+
+
+def rendered_hermes_external_dirs(
+    existing: str, *, config_path: Path, desired_roots: tuple[Path, ...]
+) -> str:
+    """Preserve a Hermes YAML config while owning one bounded list fragment."""
+    lines = existing.splitlines()
+    begin = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == HERMES_EXTERNAL_DIRS_BEGIN
+    ]
+    end = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == HERMES_EXTERNAL_DIRS_END
+    ]
+    managed_values: list[str] = []
+    if len(begin) != len(end) or len(begin) > 1:
+        raise ValueError(f"Hermes managed external-dir markers are malformed: {config_path}")
+    if begin:
+        start = begin[0]
+        stop = end[0]
+        if start >= stop or _yaml_indent(lines[start]) != _yaml_indent(lines[stop]):
+            raise ValueError(
+                f"Hermes managed external-dir markers are malformed: {config_path}"
+            )
+        managed_indent = _yaml_indent(lines[start])
+        managed_parent = None
+        managed_parent_index = -1
+        for index in range(start - 1, -1, -1):
+            line = lines[index]
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if _yaml_indent(line) < managed_indent:
+                managed_parent = line
+                managed_parent_index = index
+                break
+        if managed_parent is None or re.match(
+            r"^\s+external_dirs\s*:\s*(?:#.*)?$", managed_parent
+        ) is None:
+            raise ValueError(
+                f"Hermes managed external-dir block is misplaced: {config_path}"
+            )
+        skills_candidates = [
+            index for index, line in enumerate(lines) if re.match(r"^skills\s*:", line)
+        ]
+        if len(skills_candidates) > 1:
+            raise ValueError(f"Hermes skills mapping is ambiguous: {config_path}")
+        if not skills_candidates:
+            raise ValueError(
+                f"Hermes managed external-dir block is misplaced: {config_path}"
+            )
+        skills_index = skills_candidates[0]
+        if not re.match(r"^skills:\s*(?:#.*)?$", lines[skills_index]):
+            raise ValueError(f"Hermes skills mapping must use block form: {config_path}")
+        skills_end = len(lines)
+        for index in range(skills_index + 1, len(lines)):
+            line = lines[index]
+            if line.strip() and not line.lstrip().startswith("#") and _yaml_indent(line) == 0:
+                skills_end = index
+                break
+        if not skills_index < managed_parent_index < skills_end:
+            raise ValueError(
+                f"Hermes managed external-dir block is misplaced: {config_path}"
+            )
+        child_indents = [
+            _yaml_indent(lines[index])
+            for index in range(skills_index + 1, skills_end)
+            if lines[index].strip() and not lines[index].lstrip().startswith("#")
+        ]
+        child_indent = min(child_indents) if child_indents else 2
+        direct_managed_block = _yaml_indent(managed_parent) == child_indent
+        marker_values: list[str] = []
+        for line in lines[start + 1 : stop]:
+            if not line.strip():
+                continue
+            if _yaml_indent(line) != managed_indent or not line.lstrip().startswith("-"):
+                raise ValueError(
+                    f"Hermes managed external-dir block is malformed: {config_path}"
+                )
+            value = _yaml_sequence_scalar(line, path=config_path)
+            if direct_managed_block and value in marker_values:
+                raise ValueError(
+                    f"Hermes managed external-dir block contains a duplicate: {config_path}"
+                )
+            marker_values.append(value)
+        if direct_managed_block:
+            managed_values.extend(marker_values)
+            del lines[start : stop + 1]
+        else:
+            del lines[stop]
+            del lines[start]
+
+    skills_candidates = [
+        index for index, line in enumerate(lines) if re.match(r"^skills\s*:", line)
+    ]
+    if len(skills_candidates) > 1:
+        raise ValueError(f"Hermes skills mapping is ambiguous: {config_path}")
+    if not skills_candidates:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(("skills:", "  external_dirs:"))
+        external_index = len(lines) - 1
+        external_indent = 2
+        external_end = len(lines)
+        item_indent = 4
+        existing_values: list[str] = []
+    else:
+        skills_index = skills_candidates[0]
+        if not re.match(r"^skills:\s*(?:#.*)?$", lines[skills_index]):
+            raise ValueError(f"Hermes skills mapping must use block form: {config_path}")
+        skills_end = len(lines)
+        for index in range(skills_index + 1, len(lines)):
+            line = lines[index]
+            if line.strip() and not line.lstrip().startswith("#") and _yaml_indent(line) == 0:
+                skills_end = index
+                break
+        child_indents = [
+            _yaml_indent(lines[index])
+            for index in range(skills_index + 1, skills_end)
+            if lines[index].strip() and not lines[index].lstrip().startswith("#")
+        ]
+        child_indent = min(child_indents) if child_indents else 2
+        external_candidates = [
+            index
+            for index in range(skills_index + 1, skills_end)
+            if _yaml_indent(lines[index]) == child_indent
+            and re.match(r"^\s+external_dirs\s*:", lines[index])
+        ]
+        if len(external_candidates) > 1:
+            raise ValueError(
+                f"Hermes skills.external_dirs mapping is ambiguous: {config_path}"
+            )
+        if not external_candidates:
+            external_indent = child_indent
+            item_indent = external_indent + 2
+            external_index = skills_end
+            lines.insert(external_index, " " * external_indent + "external_dirs:")
+            external_end = external_index + 1
+            existing_values = []
+        else:
+            external_index = external_candidates[0]
+            external_match = re.match(
+                r"^(\s*)external_dirs\s*:\s*(?:#.*)?$", lines[external_index]
+            )
+            if external_match is None:
+                raise ValueError(
+                    f"Hermes skills.external_dirs must use block-list form: {config_path}"
+                )
+            external_indent = len(external_match.group(1))
+            external_end = skills_end
+            for index in range(external_index + 1, skills_end):
+                line = lines[index]
+                if (
+                    line.strip()
+                    and not line.lstrip().startswith("#")
+                    and _yaml_indent(line) <= external_indent
+                ):
+                    external_end = index
+                    break
+            item_lines = [
+                lines[index]
+                for index in range(external_index + 1, external_end)
+                if lines[index].strip() and not lines[index].lstrip().startswith("#")
+            ]
+            if item_lines:
+                item_indent = _yaml_indent(item_lines[0])
+                if item_indent <= external_indent:
+                    raise ValueError(
+                        f"Hermes skills.external_dirs indentation is invalid: {config_path}"
+                    )
+            else:
+                item_indent = external_indent + 2
+            existing_values = []
+            for line in item_lines:
+                if _yaml_indent(line) != item_indent:
+                    raise ValueError(
+                        f"Hermes skills.external_dirs is not a scalar list: {config_path}"
+                    )
+                existing_values.append(_yaml_sequence_scalar(line, path=config_path))
+
+    observed_values = managed_values + existing_values
+    for root in desired_roots:
+        if observed_values.count(str(root)) > 1:
+            raise ValueError(
+                f"Hermes skills.external_dirs contains a duplicate managed target: "
+                f"{config_path}"
+            )
+    missing = [str(root) for root in desired_roots if str(root) not in existing_values]
+    if missing:
+        managed = [" " * item_indent + HERMES_EXTERNAL_DIRS_BEGIN]
+        managed.extend(
+            " " * item_indent + "- " + json.dumps(value, ensure_ascii=False)
+            for value in missing
+        )
+        managed.append(" " * item_indent + HERMES_EXTERNAL_DIRS_END)
+        lines[external_end:external_end] = managed
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def rendered_hermes_configs(
+    home_root: Path, *, raw_root: Path | None
+) -> dict[Path, str]:
+    if raw_root is None:
+        return {}
+    raw_skill_root = (raw_root / ".agents" / "skills").resolve()
+    default_config = home_root / ".hermes" / "config.yaml"
+    current_default, _default_mode = read_optional_owner_config(default_config)
+    configs = {
+        default_config: rendered_hermes_external_dirs(
+            current_default or "",
+            config_path=default_config,
+            desired_roots=(raw_skill_root,),
+        )
+    }
+    profile_config = (
+        home_root / ".hermes" / "profiles" / HERMES_PROFILE_NAME / "config.yaml"
+    )
+    current_profile, _profile_mode = read_optional_owner_config(profile_config)
+    if current_profile is not None:
+        configs[profile_config] = rendered_hermes_external_dirs(
+            current_profile,
+            config_path=profile_config,
+            desired_roots=(
+                (home_root / ".hermes" / "skills").resolve(),
+                raw_skill_root,
+            ),
+        )
+    return configs
+
+
+def forbidden_collect_user_projections(home_root: Path) -> tuple[Path, ...]:
+    return (
+        home_root / ".codex" / "skills" / COLLECT_RAW_SYNC_HISTORY.skill_name,
+        home_root / ".claude" / "skills" / COLLECT_RAW_SYNC_HISTORY.skill_name,
+        home_root / ".hermes" / "skills" / COLLECT_RAW_SYNC_HISTORY.skill_name,
+    )
+
+
+def path_lexists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
 
 
 def registration_block(package: ManagedPackage) -> str:
@@ -161,15 +530,38 @@ def rendered_config(existing: str) -> str:
     return rendered
 
 
-def write_atomic(path: Path, content: str) -> None:
+def write_atomic(path: Path, content: str, *, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, delete=False
     ) as temporary:
         temporary.write(content)
         temporary_path = Path(temporary.name)
-    temporary_path.chmod(0o644)
+    temporary_path.chmod(mode)
     os.replace(temporary_path, path)
+
+
+def read_optional_owner_config(path: Path) -> tuple[str | None, int]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, 0o600
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise ValueError(f"unsafe Hermes config: {path}")
+    try:
+        return path.read_text(encoding="utf-8"), stat.S_IMODE(info.st_mode)
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read Hermes config: {path}") from exc
+
+
+def write_hermes_config(path: Path, content: str) -> None:
+    _existing, mode = read_optional_owner_config(path)
+    write_atomic(path, content, mode=mode)
 
 
 def write_private_atomic(path: Path, content: str) -> None:
@@ -420,13 +812,29 @@ def rendered_entrypoint_manifest(home_root: Path) -> str:
     return json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
 
 
-def check(home_root: Path, *, include_launcher: bool) -> list[str]:
+def check(
+    home_root: Path, *, raw_root: Path | None = None, include_launcher: bool
+) -> list[str]:
     problems: list[str] = []
-    for path, expected in rendered_outputs(home_root).items():
+    try:
+        outputs = rendered_outputs(home_root)
+        outputs.update(rendered_skill_outputs(home_root, raw_root=raw_root))
+        hermes_configs = rendered_hermes_configs(home_root, raw_root=raw_root)
+    except ValueError as exc:
+        return [str(exc)]
+    for path, expected in outputs.items():
         if not path.is_file():
             problems.append(f"missing projection: {path}")
         elif path.read_text(encoding="utf-8") != expected:
             problems.append(f"stale projection: {path}")
+    for path in forbidden_collect_user_projections(home_root):
+        if path_lexists(path):
+            problems.append(f"forbidden user-global collect projection: {path}")
+    for path, expected in hermes_configs.items():
+        if not path.is_file():
+            problems.append(f"missing Hermes external-skill config: {path}")
+        elif path.read_text(encoding="utf-8") != expected:
+            problems.append(f"stale Hermes external-skill config: {path}")
     config_path = home_root / ".codex" / "config.toml"
     if not config_path.is_file():
         problems.append(f"missing projection: {config_path}")
@@ -464,6 +872,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.home(),
         help="home-root projection destination (use a temporary directory in tests)",
     )
+    parser.add_argument(
+        "--raw-root",
+        type=Path,
+        help=(
+            "existing raw directory for the local collect-raw-sync-history projection; "
+            "omit to skip that projection"
+        ),
+    )
     parser.add_argument("--check", action="store_true", help="validate only; do not write")
     parser.add_argument(
         "--install-launcher",
@@ -476,11 +892,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     home_root = args.home_root.expanduser().resolve()
+    raw_root = args.raw_root.expanduser().resolve() if args.raw_root else None
+    if raw_root is not None and not raw_root.is_dir():
+        print(f"raw-root is not an existing directory: {raw_root}", file=sys.stderr)
+        return 2
     if args.check:
-        problems = check(home_root, include_launcher=args.install_launcher)
+        problems = check(
+            home_root,
+            raw_root=raw_root,
+            include_launcher=args.install_launcher,
+        )
         for problem in problems:
             print(problem, file=sys.stderr)
         return 1 if problems else 0
+
+    forbidden = [
+        path for path in forbidden_collect_user_projections(home_root) if path_lexists(path)
+    ]
+    if forbidden:
+        for path in forbidden:
+            print(f"forbidden user-global collect projection: {path}", file=sys.stderr)
+        return 2
 
     config_path = home_root / ".codex" / "config.toml"
     current_config = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -489,10 +921,18 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    outputs = rendered_outputs(home_root)
+    try:
+        outputs = rendered_outputs(home_root)
+        outputs.update(rendered_skill_outputs(home_root, raw_root=raw_root))
+        hermes_configs = rendered_hermes_configs(home_root, raw_root=raw_root)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     for path, content in outputs.items():
         write_atomic(path, content)
     write_atomic(config_path, next_config)
+    for path, content in hermes_configs.items():
+        write_hermes_config(path, content)
     if args.install_launcher:
         install_launcher(home_root)
         write_private_atomic(

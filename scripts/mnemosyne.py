@@ -223,6 +223,7 @@ RUNTIME_MODULE_CLOSURE = (
     ),
     ("mnemosyne_core.cli.inspect", "cli/inspect.py", False),
     ("mnemosyne_core.cli.guide", "cli/guide.py", False),
+    ("mnemosyne_core.raw_memory_query", "raw_memory_query.py", False),
 )
 
 
@@ -447,6 +448,7 @@ except Exception:
 _mnemosyne_core = _bootstrap_core_package()
 _canonical_json_core = _bootstrap_core_module_by_path("canonical_json.py")
 _safety_core = _bootstrap_core_module_by_path("safety.py")
+_raw_memory_query_core = _bootstrap_core_module_by_path("raw_memory_query.py")
 _policy_core = _bootstrap_core_module_by_path("policy.py")
 _control_core = _bootstrap_core_module_by_path("control.py")
 _workspace_sync_review_core = _bootstrap_core_module_by_path("workspace_sync_review.py")
@@ -4682,6 +4684,10 @@ def render_context_json(package: dict[str, Any], max_chars: int) -> str:
 
 
 def command_context(args: argparse.Namespace) -> int:
+    args.history = getattr(args, "history", 5)
+    args.max_chars = getattr(args, "max_chars", 12000)
+    if not args.workspace:
+        raise MnemosyneError("--workspace is required")
     if args.history < 0:
         raise MnemosyneError("--history must be >= 0")
     if args.max_chars < 500:
@@ -4694,6 +4700,141 @@ def command_context(args: argparse.Namespace) -> int:
 
     output = render_context_package(package, args.max_chars)
     print(output, end="")
+    return 0
+
+
+def _render_query_json(payload: dict[str, Any], *, max_chars: int | None = None) -> str:
+    """Render one query envelope, shrinking only bounded excerpts when needed."""
+    rendered_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    rendered_payload["truncated"] = False
+    for _ in range(32):
+        rendered = json.dumps(rendered_payload, ensure_ascii=False, indent=2)
+        if max_chars is None or len(rendered) <= max_chars:
+            return rendered + "\n"
+
+        rendered_payload["truncated"] = True
+        history = rendered_payload.get("history", [])
+        reducible = [
+            entry
+            for entry in history
+            if isinstance(entry, dict) and isinstance(entry.get("excerpt"), str) and entry["excerpt"]
+        ]
+        if reducible:
+            for entry in reducible:
+                excerpt = entry["excerpt"]
+                entry["excerpt"], _ = truncate_text(excerpt, len(excerpt) // 2)
+            continue
+        snapshot = rendered_payload.get("snapshot_excerpt")
+        if isinstance(snapshot, str) and snapshot:
+            rendered_payload["snapshot_excerpt"], _ = truncate_text(
+                snapshot, len(snapshot) // 2
+            )
+            continue
+        if isinstance(history, list) and history:
+            rendered_payload["history"] = history[:-1]
+            continue
+        break
+    raise MnemosyneError("--max-chars is too small for the query result envelope")
+
+
+def command_collect_sync_history(args: argparse.Namespace) -> int:
+    try:
+        result = _raw_memory_query_core.collect_sync_history(
+            Path(args.root),
+            start_date=args.from_date,
+            end_date=args.to_date,
+        )
+    except _raw_memory_query_core.RawMemoryQueryError as exc:
+        raise MnemosyneError(str(exc)) from exc
+    payload = result.as_dict()
+    if args.json:
+        print(_render_query_json(payload), end="")
+        return 0
+
+    lines = [
+        "mode: collect-sync-history",
+        f"status: {payload['status']}",
+        f"range: {args.from_date}..{args.to_date}",
+        "writes: none",
+        "",
+        "## Items",
+    ]
+    for item in payload["items"]:
+        source_refs = ", ".join(item["source_refs"]) or "(history path only)"
+        workstream = item.get("workstream") or "(none)"
+        lines.extend(
+            (
+                f"- {item['recorded_at']} · {item['workspace']} / {workstream}",
+                f"  item: {item['item']}",
+                f"  sources: {source_refs}",
+                f"  history: {item['history_path']}",
+            )
+        )
+    if payload["issues"]:
+        lines.extend(("", "## Read issues"))
+        lines.extend(
+            f"- {issue['path']}: {issue['detail']}" for issue in payload["issues"]
+        )
+    print("\n".join(lines))
+    return 0
+
+
+def command_lookup_project_context(args: argparse.Namespace) -> int:
+    args.history = getattr(args, "history", 8)
+    args.max_chars = getattr(args, "max_chars", 24000)
+    if args.max_chars < 500:
+        raise MnemosyneError("--max-chars must be >= 500")
+    try:
+        result = _raw_memory_query_core.lookup_project_context(
+            Path(args.root),
+            project_root=Path(args.project_root),
+            question=args.question or "",
+            task_context=args.task_context or "",
+            snapshot_char_limit=args.snapshot_chars,
+            history_limit=args.history,
+            history_excerpt_char_limit=args.history_excerpt_chars,
+        )
+    except _raw_memory_query_core.RawMemoryQueryError as exc:
+        raise MnemosyneError(str(exc)) from exc
+    payload = result.as_dict()
+    if args.json:
+        print(_render_query_json(payload, max_chars=args.max_chars), end="")
+        return 0
+
+    lines = [
+        "mode: lookup-project-context",
+        f"status: {payload['status']}",
+        f"workspace: {payload['workspace'] or '(none)'}",
+        f"candidates: {', '.join(payload['candidates']) or '(none)'}",
+        "writes: none",
+    ]
+    if payload["snapshot_path"]:
+        lines.extend(
+            (
+                "",
+                "## Snapshot",
+                f"path: {payload['snapshot_path']}",
+                payload["snapshot_excerpt"] or "",
+            )
+        )
+    if payload["history"]:
+        lines.extend(("", "## Relevant history"))
+        for entry in payload["history"]:
+            lines.extend(
+                (
+                    "",
+                    f"path: {entry['history_path']}",
+                    f"recorded_at: {entry['recorded_at'] or '(unknown)'}",
+                    entry["excerpt"],
+                )
+            )
+    if payload["issues"]:
+        lines.extend(("", "## Read issues"))
+        lines.extend(
+            f"- {issue['path']}: {issue['detail']}" for issue in payload["issues"]
+        )
+    rendered, _truncated = truncate_text("\n".join(lines) + "\n", args.max_chars)
+    print(rendered, end="")
     return 0
 
 
@@ -7856,15 +7997,46 @@ def build_parser() -> argparse.ArgumentParser:
     memory_sync.set_defaults(func=command_memory_sync)
 
     context = subparsers.add_parser("context")
-    context.add_argument("--workspace", required=True)
+    context.add_argument("--workspace")
     context.add_argument("--question")
-    context.add_argument("--history", type=int, default=5)
-    context.add_argument("--max-chars", type=int, default=12000)
+    context.add_argument("--history", type=int, default=argparse.SUPPRESS)
+    context.add_argument("--max-chars", type=int, default=argparse.SUPPRESS)
     context.add_argument("--with-graphify", action="store_true")
     context.add_argument("--json", action="store_true")
     context.add_argument("--allow-unknown", action="store_true")
     context.add_argument("--root", default=str(DEFAULT_ROOT))
     context.set_defaults(func=command_context)
+
+    context_queries = context.add_subparsers(dest="context_query")
+
+    collect_sync_history = context_queries.add_parser("collect-sync-history")
+    collect_sync_history.add_argument("--from-date", required=True)
+    collect_sync_history.add_argument("--to-date", required=True)
+    collect_sync_history.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
+    collect_sync_history.add_argument("--root", default=argparse.SUPPRESS)
+    collect_sync_history.set_defaults(func=command_collect_sync_history)
+
+    lookup_project_context = context_queries.add_parser("lookup-project-context")
+    lookup_project_context.add_argument("--project-root", required=True)
+    lookup_project_context.add_argument("--question", default=argparse.SUPPRESS)
+    lookup_project_context.add_argument("--task-context")
+    lookup_project_context.add_argument("--snapshot-chars", type=int, default=12000)
+    lookup_project_context.add_argument(
+        "--history", type=int, default=argparse.SUPPRESS
+    )
+    lookup_project_context.add_argument(
+        "--history-excerpt-chars", type=int, default=2000
+    )
+    lookup_project_context.add_argument(
+        "--max-chars", type=int, default=argparse.SUPPRESS
+    )
+    lookup_project_context.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
+    lookup_project_context.add_argument("--root", default=argparse.SUPPRESS)
+    lookup_project_context.set_defaults(func=command_lookup_project_context)
 
     curation = subparsers.add_parser("curation")
     curation_commands = curation.add_subparsers(dest="curation_command", required=True)

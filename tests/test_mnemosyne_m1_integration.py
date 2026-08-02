@@ -150,6 +150,7 @@ class MnemosyneM1IntegrationTest(unittest.TestCase):
                 "cli/context_activation.py",
                 "cli/inspect.py",
                 "cli/guide.py",
+                "raw_memory_query.py",
             ],
         )
         for binding in (
