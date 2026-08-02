@@ -266,12 +266,14 @@ def rendered_hermes_external_dirs(
             )
         managed_indent = _yaml_indent(lines[start])
         managed_parent = None
+        managed_parent_index = -1
         for index in range(start - 1, -1, -1):
             line = lines[index]
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
             if _yaml_indent(line) < managed_indent:
                 managed_parent = line
+                managed_parent_index = index
                 break
         if managed_parent is None or re.match(
             r"^\s+external_dirs\s*:\s*(?:#.*)?$", managed_parent
@@ -279,6 +281,36 @@ def rendered_hermes_external_dirs(
             raise ValueError(
                 f"Hermes managed external-dir block is misplaced: {config_path}"
             )
+        skills_candidates = [
+            index for index, line in enumerate(lines) if re.match(r"^skills\s*:", line)
+        ]
+        if len(skills_candidates) > 1:
+            raise ValueError(f"Hermes skills mapping is ambiguous: {config_path}")
+        if not skills_candidates:
+            raise ValueError(
+                f"Hermes managed external-dir block is misplaced: {config_path}"
+            )
+        skills_index = skills_candidates[0]
+        if not re.match(r"^skills:\s*(?:#.*)?$", lines[skills_index]):
+            raise ValueError(f"Hermes skills mapping must use block form: {config_path}")
+        skills_end = len(lines)
+        for index in range(skills_index + 1, len(lines)):
+            line = lines[index]
+            if line.strip() and not line.lstrip().startswith("#") and _yaml_indent(line) == 0:
+                skills_end = index
+                break
+        if not skills_index < managed_parent_index < skills_end:
+            raise ValueError(
+                f"Hermes managed external-dir block is misplaced: {config_path}"
+            )
+        child_indents = [
+            _yaml_indent(lines[index])
+            for index in range(skills_index + 1, skills_end)
+            if lines[index].strip() and not lines[index].lstrip().startswith("#")
+        ]
+        child_indent = min(child_indents) if child_indents else 2
+        direct_managed_block = _yaml_indent(managed_parent) == child_indent
+        marker_values: list[str] = []
         for line in lines[start + 1 : stop]:
             if not line.strip():
                 continue
@@ -287,12 +319,17 @@ def rendered_hermes_external_dirs(
                     f"Hermes managed external-dir block is malformed: {config_path}"
                 )
             value = _yaml_sequence_scalar(line, path=config_path)
-            if value in managed_values:
+            if direct_managed_block and value in marker_values:
                 raise ValueError(
                     f"Hermes managed external-dir block contains a duplicate: {config_path}"
                 )
-            managed_values.append(value)
-        del lines[start : stop + 1]
+            marker_values.append(value)
+        if direct_managed_block:
+            managed_values.extend(marker_values)
+            del lines[start : stop + 1]
+        else:
+            del lines[stop]
+            del lines[start]
 
     skills_candidates = [
         index for index, line in enumerate(lines) if re.match(r"^skills\s*:", line)
@@ -318,21 +355,24 @@ def rendered_hermes_external_dirs(
             if line.strip() and not line.lstrip().startswith("#") and _yaml_indent(line) == 0:
                 skills_end = index
                 break
-        external_candidates = []
-        for index in range(skills_index + 1, skills_end):
-            if re.match(r"^\s+external_dirs\s*:", lines[index]):
-                external_candidates.append(index)
+        child_indents = [
+            _yaml_indent(lines[index])
+            for index in range(skills_index + 1, skills_end)
+            if lines[index].strip() and not lines[index].lstrip().startswith("#")
+        ]
+        child_indent = min(child_indents) if child_indents else 2
+        external_candidates = [
+            index
+            for index in range(skills_index + 1, skills_end)
+            if _yaml_indent(lines[index]) == child_indent
+            and re.match(r"^\s+external_dirs\s*:", lines[index])
+        ]
         if len(external_candidates) > 1:
             raise ValueError(
                 f"Hermes skills.external_dirs mapping is ambiguous: {config_path}"
             )
         if not external_candidates:
-            child_indents = [
-                _yaml_indent(lines[index])
-                for index in range(skills_index + 1, skills_end)
-                if lines[index].strip() and not lines[index].lstrip().startswith("#")
-            ]
-            external_indent = min(child_indents) if child_indents else 2
+            external_indent = child_indent
             item_indent = external_indent + 2
             external_index = skills_end
             lines.insert(external_index, " " * external_indent + "external_dirs:")

@@ -128,6 +128,68 @@ class RawMemoryQueryTest(unittest.TestCase):
             self.assertEqual([item.item for item in result.items], ["정상"])
             self.assertTrue(any(issue.path.endswith("bad.md") for issue in result.issues))
 
+    def test_collect_prioritizes_in_range_filename_records_before_history_cap(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
+            raw = self.make_raw(Path(temporary_directory), {"alpha": "/projects/alpha"})
+            history = raw / "memory" / "alpha" / "history"
+            for index in range(512):
+                _write(
+                    history / f"20200101T000000Z-old-{index:03d}.md",
+                    _history(created_at="2020-01-01T00:00:00Z", body="범위 밖"),
+                )
+            _write(
+                history / "20260802T000000Z-target.md",
+                _history(
+                    created_at="2026-08-02T00:00:00Z",
+                    body="## 기록으로 남긴 내용\n\n- 범위 안 작업\n",
+                ),
+            )
+
+            result = raw_memory_query.collect_sync_history(
+                raw, start_date="2026-08-02", end_date="2026-08-02"
+            )
+
+            self.assertEqual(result.status, "found")
+            self.assertEqual([item.item for item in result.items], ["범위 안 작업"])
+            self.assertTrue(
+                any(
+                    issue.kind == "truncated"
+                    and issue.path == "memory/alpha/history"
+                    for issue in result.issues
+                )
+            )
+
+    def test_collect_does_not_report_not_found_when_history_cap_leaves_undated_records_unread(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
+            raw = self.make_raw(Path(temporary_directory), {"alpha": "/projects/alpha"})
+            history = raw / "memory" / "alpha" / "history"
+            for index in range(512):
+                _write(
+                    history / f"old-{index:03d}.md",
+                    _history(created_at="2020-01-01T00:00:00Z", body="범위 밖"),
+                )
+            _write(
+                history / "target.md",
+                _history(
+                    created_at="2026-08-02T00:00:00Z",
+                    body="## 기록으로 남긴 내용\n\n- 읽지 못한 범위 안 작업\n",
+                ),
+            )
+
+            result = raw_memory_query.collect_sync_history(
+                raw, start_date="2026-08-02", end_date="2026-08-02"
+            )
+
+            self.assertEqual(result.status, "unavailable")
+            self.assertFalse(result.items)
+            self.assertTrue(
+                any(
+                    issue.kind == "truncated"
+                    and "matching records may be unread" in issue.detail
+                    for issue in result.issues
+                )
+            )
+
     def test_lookup_uses_normalized_exact_root_and_ranks_history_by_question_and_task_context(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
             temporary = Path(temporary_directory)
@@ -187,6 +249,34 @@ class RawMemoryQueryTest(unittest.TestCase):
             self.assertEqual(result.history[0].history_path, "memory/alpha/history/new.md")
             self.assertLessEqual(len(result.snapshot_excerpt or ""), 10)
             self.assertLessEqual(len(result.history[0].excerpt), 5)
+
+    def test_lookup_history_cap_keeps_newest_records_available_for_relevance_ranking(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
+            temporary = Path(temporary_directory)
+            project = temporary / "project"
+            project.mkdir()
+            raw = self.make_raw(temporary, {"alpha": str(project)})
+            history = raw / "memory" / "alpha" / "history"
+            for index in range(512):
+                _write(
+                    history / f"20260801T000000Z-old-{index:03d}.md",
+                    _history(created_at="2026-08-01T00:00:00Z", body="일반 기록"),
+                )
+            _write(
+                history / "20260802T000000Z-target.md",
+                _history(created_at="2026-08-02T00:00:00Z", body="특정 최신 맥락"),
+            )
+
+            result = raw_memory_query.lookup_project_context(
+                raw, project_root=project, question="특정 최신 맥락", history_limit=1
+            )
+
+            self.assertEqual(result.status, "found")
+            self.assertEqual(
+                result.history[0].history_path,
+                "memory/alpha/history/20260802T000000Z-target.md",
+            )
+            self.assertTrue(any(issue.kind == "truncated" for issue in result.issues))
 
     def test_collect_reads_legacy_source_workstream_timestamp_and_filename_forms(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
@@ -409,6 +499,33 @@ class RawMemoryQueryTest(unittest.TestCase):
             self.assertTrue(
                 any("invalid workspace" in issue.detail for issue in unsafe_slug.issues)
             )
+
+    def test_lookup_treats_invalid_registry_root_as_unavailable_but_rejects_invalid_caller_root(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:
+            temporary = Path(temporary_directory)
+            project = temporary / "project"
+            project.mkdir()
+            raw = self.make_raw(temporary, {"alpha": str(project)})
+            registry = raw / "memory" / "workspaces.yml"
+            _write(registry, "workspaces:\n  alpha:\n    root: invalid\x00root\n")
+
+            malformed = raw_memory_query.lookup_project_context(raw, project_root=project)
+
+            self.assertEqual(malformed.status, "unavailable")
+            self.assertTrue(
+                any(
+                    issue.kind == "malformed" and issue.path == "memory/workspaces.yml"
+                    for issue in malformed.issues
+                )
+            )
+
+            _write(registry, f"workspaces:\n  alpha:\n    root: {project}\n")
+            with self.assertRaisesRegex(raw_memory_query.RawMemoryQueryError, "project root is invalid"):
+                raw_memory_query.lookup_project_context(raw, project_root="invalid\x00root")
+            with self.assertRaisesRegex(raw_memory_query.RawMemoryQueryError, "project root is invalid"):
+                raw_memory_query.lookup_project_context(
+                    temporary / "missing-raw", project_root="invalid\x00root"
+                )
 
     def test_lookup_is_unavailable_when_neither_snapshot_nor_history_can_be_read(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary_directory:

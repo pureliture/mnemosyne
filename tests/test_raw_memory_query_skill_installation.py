@@ -163,12 +163,18 @@ class RawMemoryQuerySkillInstallationTest(unittest.TestCase):
             profile_config.parent.mkdir(parents=True)
             config.write_text(
                 "# keep this comment\nmodel: fixture\nskills:\n"
-                "  external_dirs:\n    - /existing/default\n",
+                "  providers:\n"
+                "    external_dirs:\n"
+                "      - /existing/nested-default\n",
                 encoding="utf-8",
             )
             profile_config.write_text(
                 "# profile comment\nmodel: profile-fixture\nskills:\n"
-                "  external_dirs:\n    - /existing/profile\n",
+                "  providers:\n"
+                "    external_dirs:\n"
+                "      - /existing/nested-profile\n"
+                "  external_dirs:\n"
+                "    - /existing/profile\n",
                 encoding="utf-8",
             )
 
@@ -176,16 +182,30 @@ class RawMemoryQuerySkillInstallationTest(unittest.TestCase):
             self.assertEqual(installed.returncode, 0, installed.stderr)
             first_config = config.read_text(encoding="utf-8")
             first_profile_config = profile_config.read_text(encoding="utf-8")
+            raw_skills = str((raw_root / ".agents" / "skills").resolve())
+            hermes_skills = str((hermes_root / "skills").resolve())
             self.assertEqual(config.stat().st_mode & 0o777, 0o644)
             self.assertEqual(profile_config.stat().st_mode & 0o777, 0o644)
             self.assertIn("# keep this comment", first_config)
             self.assertIn("model: fixture", first_config)
-            self.assertIn("/existing/default", first_config)
+            self.assertIn("/existing/nested-default", first_config)
+            self.assertIn("  providers:\n    external_dirs:\n      - /existing/nested-default", first_config)
+            self.assertIn("  external_dirs:", first_config)
             self.assertIn("# profile comment", first_profile_config)
             self.assertIn("model: profile-fixture", first_profile_config)
             self.assertIn("/existing/profile", first_profile_config)
-            raw_skills = str((raw_root / ".agents" / "skills").resolve())
-            hermes_skills = str((hermes_root / "skills").resolve())
+            self.assertIn("/existing/nested-profile", first_profile_config)
+            self.assertIn(
+                "  providers:\n    external_dirs:\n      - /existing/nested-profile",
+                first_profile_config,
+            )
+            self.assertGreater(
+                first_config.index(raw_skills), first_config.rindex("\n  external_dirs:")
+            )
+            self.assertGreater(
+                first_profile_config.index(raw_skills),
+                first_profile_config.rindex("\n  external_dirs:"),
+            )
             self.assertEqual(first_config.count(raw_skills), 1)
             self.assertEqual(first_profile_config.count(raw_skills), 1)
             self.assertEqual(first_profile_config.count(hermes_skills), 1)
@@ -213,6 +233,53 @@ class RawMemoryQuerySkillInstallationTest(unittest.TestCase):
             second = self.run_installer(home_root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(hermes_config.read_text(encoding="utf-8"), original)
+
+    def test_migrates_legacy_nested_managed_block_without_dropping_values(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            home_root = root / "isolated-home"
+            raw_root = root / "raw"
+            raw_root.mkdir()
+            raw_skills = str((raw_root / ".agents" / "skills").resolve())
+            config = home_root / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "skills:\n"
+                "  providers:\n"
+                "    external_dirs:\n"
+                "      - /existing/nested\n"
+                "      # BEGIN Mnemosyne query skill external dirs\n"
+                f"      - {raw_skills}\n"
+                "      # END Mnemosyne query skill external dirs\n",
+                encoding="utf-8",
+            )
+
+            installed = self.run_installer(home_root, raw_root)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            migrated = config.read_text(encoding="utf-8")
+            direct_external_dirs = migrated.rindex("\n  external_dirs:")
+            self.assertIn(
+                "  providers:\n"
+                "    external_dirs:\n"
+                "      - /existing/nested\n"
+                f"      - {raw_skills}\n",
+                migrated,
+            )
+            self.assertLess(migrated.index(raw_skills), direct_external_dirs)
+            self.assertGreater(migrated.rindex(raw_skills), direct_external_dirs)
+            self.assertEqual(migrated.count(raw_skills), 2)
+            self.assertEqual(
+                migrated.count("# BEGIN Mnemosyne query skill external dirs"), 1
+            )
+            self.assertEqual(
+                migrated.count("# END Mnemosyne query skill external dirs"), 1
+            )
+
+            reinstalled = self.run_installer(home_root, raw_root)
+            self.assertEqual(reinstalled.returncode, 0, reinstalled.stderr)
+            self.assertEqual(config.read_text(encoding="utf-8"), migrated)
+            checked = self.run_installer(home_root, raw_root, "--check")
+            self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_rejects_malformed_hermes_config_before_any_projection_write(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

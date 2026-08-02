@@ -130,10 +130,13 @@ def collect_sync_history(
 
     items: list[SyncHistoryItem] = []
     receipt_index = _read_receipt_index(root, issues)
+    history_truncated = False
     for workspace in sorted(registry):
-        for record in _read_workspace_history(
+        records, workspace_history_truncated = _read_workspace_history(
             root, workspace, issues, start_date=start, end_date=end
-        ):
+        )
+        history_truncated = history_truncated or workspace_history_truncated
+        for record in records:
             recorded_date = _recorded_date(record.recorded_at)
             if recorded_date is None:
                 issues.append(
@@ -170,7 +173,7 @@ def collect_sync_history(
         for item in items
     }
     return SyncHistoryResult(
-        "found" if deduped else "not_found",
+        "found" if deduped else "unavailable" if history_truncated else "not_found",
         tuple(
             sorted(
                 deduped.values(),
@@ -195,12 +198,12 @@ def lookup_project_context(
     if snapshot_char_limit < 0 or history_limit < 0 or history_excerpt_char_limit < 0:
         raise RawMemoryQueryError("query bounds must be nonnegative")
     root = _canonical_root(raw_root)
+    normalized_project = _normalize_project_root(project_root)
     issues: list[QueryIssue] = _BoundedIssues()
     registry = _read_registry(root, issues)
     if registry is None:
         return ProjectContextResult("unavailable", None, (), None, None, (), tuple(issues))
 
-    normalized_project = _normalize_project_root(project_root)
     candidates = tuple(
         workspace
         for workspace, workspace_root in sorted(registry.items())
@@ -215,7 +218,7 @@ def lookup_project_context(
     snapshot_path, snapshot_excerpt = _read_snapshot(
         root, workspace, snapshot_char_limit, issues
     )
-    records = _read_workspace_history(root, workspace, issues)
+    records, _history_truncated = _read_workspace_history(root, workspace, issues)
     tokens = _query_tokens(question, task_context)
     selected = sorted(
         records,
@@ -260,14 +263,14 @@ class _HistoryRecord:
 def _canonical_root(value: Path | str) -> Path:
     try:
         return Path(os.path.abspath(Path(value).expanduser())).resolve(strict=False)
-    except (OSError, RuntimeError, TypeError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise RawMemoryQueryError("raw_root is invalid") from exc
 
 
 def _normalize_project_root(value: Path | str) -> str:
     try:
         return str(Path(os.path.abspath(Path(value).expanduser())).resolve(strict=False))
-    except (OSError, RuntimeError, TypeError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise RawMemoryQueryError("project root is invalid") from exc
 
 
@@ -306,8 +309,11 @@ def _read_registry(root: Path, issues: list[QueryIssue]) -> dict[str, str] | Non
     finally:
         os.close(memory_fd)
     try:
-        return _parse_workspace_roots(raw)
-    except (UnicodeDecodeError, ValueError) as exc:
+        workspace_roots = _parse_workspace_roots(raw)
+        for workspace_root in workspace_roots.values():
+            _normalize_project_root(workspace_root)
+        return workspace_roots
+    except (UnicodeDecodeError, RawMemoryQueryError, ValueError) as exc:
         issues.append(QueryIssue("malformed", "memory/workspaces.yml", str(exc)))
         return None
 
@@ -369,7 +375,7 @@ def _read_workspace_history(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> tuple[_HistoryRecord, ...]:
+) -> tuple[tuple[_HistoryRecord, ...], bool]:
     workspace_path = root / "memory" / workspace
     history_path = workspace_path / "history"
     relative_directory = f"memory/{workspace}/history"
@@ -379,7 +385,7 @@ def _read_workspace_history(
         )
     except RawMemoryQueryError as exc:
         issues.append(QueryIssue("unavailable", f"memory/{workspace}", str(exc)))
-        return ()
+        return (), False
     try:
         try:
             history_fd = safety.open_verified_directory(
@@ -387,16 +393,21 @@ def _read_workspace_history(
             )
         except RawMemoryQueryError as exc:
             issues.append(QueryIssue("unavailable", relative_directory, str(exc)))
-            return ()
+            return (), False
     finally:
         os.close(workspace_fd)
     try:
         names = sorted(name for name in os.listdir(history_fd) if name.endswith(".md"))
-        if len(names) > _MAX_HISTORY_ENTRIES:
+        history_truncated = len(names) > _MAX_HISTORY_ENTRIES
+        if history_truncated:
             issues.append(
-                QueryIssue("truncated", relative_directory, "history entry limit exceeded")
+                QueryIssue(
+                    "truncated",
+                    relative_directory,
+                    "history entry limit exceeded; matching records may be unread",
+                )
             )
-            names = names[:_MAX_HISTORY_ENTRIES]
+            names = _prioritize_history_names(names, start_date, end_date)
         records: list[_HistoryRecord] = []
         for name in names:
             relative_path = f"{relative_directory}/{name}"
@@ -436,9 +447,26 @@ def _read_workspace_history(
                 ):
                     continue
                 issues.append(QueryIssue("malformed", relative_path, str(exc)))
-        return tuple(records)
+        return tuple(records), history_truncated
     finally:
         os.close(history_fd)
+
+
+def _prioritize_history_names(
+    names: Sequence[str], start_date: date | None, end_date: date | None
+) -> tuple[str, ...]:
+    """Choose bounded history reads without burying requested or recent records."""
+    if start_date is not None and end_date is not None:
+        in_range = [
+            name
+            for name in names
+            if (filename_date := _date_from_filename(name)) is not None
+            and start_date <= filename_date <= end_date
+        ]
+        in_range_set = set(in_range)
+        remaining = [name for name in names if name not in in_range_set]
+        return tuple((*in_range, *remaining)[:_MAX_HISTORY_ENTRIES])
+    return tuple(reversed(names[-_MAX_HISTORY_ENTRIES:]))
 
 
 def _read_snapshot(

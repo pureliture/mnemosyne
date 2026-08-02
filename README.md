@@ -328,7 +328,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=scripts \
 |---|---|
 | Python requirement | `>=3.10` |
 | Test framework | standard-library `unittest` |
-| Local full suite | 2026-08-02: 1,645 tests 실행, `OK (skipped=1)` |
+| Local full suite | 2026-08-02: 1,650 tests 실행, `OK (skipped=1)` |
 
 <br/>
 

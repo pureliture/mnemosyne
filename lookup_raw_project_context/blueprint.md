@@ -36,6 +36,7 @@ the active task after providing context; it does not own or authorize later
 code mutation.
 
 Tests prove exact project resolution, all four lookup outcomes, source
-reporting, relevance ordering, read-only behavior, and projection parity. Skill
-forward tests separately prove the raw-before-code sequence and code source-of-
-truth response contract; they do not claim deployment or live-runtime truth.
+reporting, relevance ordering, read-only behavior, and projection parity.
+`SKILL.md` defines the raw-before-code sequence and code source-of-truth response
+contract; the current tests do not execute that agent-level forward path or
+claim deployment or live-runtime truth.
