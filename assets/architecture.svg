@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Mnemosyne source and runtime architecture</title>
+  <desc id="desc">The repository is the canonical package source. A separately approved installed Skill projection drives an inspect, guide, human approval, and exact dispatch flow against the runtime authority under ~/raw.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.55" stop-color="#151a35"/>
+      <stop offset="1" stop-color="#0b2a2a"/>
+    </linearGradient>
+    <linearGradient id="sourceLane" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#4c1d95"/>
+    </linearGradient>
+    <linearGradient id="runtimeLane" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0f3d56"/>
+      <stop offset="1" stop-color="#064e3b"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/>
+    </marker>
+    <style>
+      .label { font: 700 15px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0.12em; }
+      .title { font: 700 25px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .body { font: 500 16px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { font: 500 14px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font: 600 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="680" rx="30" fill="url(#background)"/>
+  <circle cx="1050" cy="70" r="180" fill="#7c3aed" opacity="0.08"/>
+  <circle cx="130" cy="640" r="220" fill="#10b981" opacity="0.07"/>
+
+  <text x="56" y="54" class="label" fill="#a5b4fc">PACKAGE SOURCE LANE</text>
+  <rect x="48" y="76" width="1104" height="196" rx="24" fill="url(#sourceLane)" opacity="0.76" stroke="#818cf8" stroke-opacity="0.55"/>
+
+  <rect x="80" y="112" width="340" height="124" rx="18" fill="#111827" stroke="#a78bfa" stroke-width="2"/>
+  <text x="108" y="147" class="title" fill="#f8fafc">Canonical repository</text>
+  <text x="108" y="180" class="mono" fill="#c4b5fd">SKILL.md · CLI · core · tests</text>
+  <text x="108" y="209" class="small" fill="#cbd5e1">Code review와 검증의 source of truth</text>
+
+  <line x1="424" y1="174" x2="604" y2="174" stroke="#c4b5fd" stroke-width="3" stroke-dasharray="9 9" marker-end="url(#arrow)"/>
+  <text x="450" y="151" class="small" fill="#ddd6fe">별도 승인·활성화</text>
+
+  <rect x="610" y="112" width="300" height="124" rx="18" fill="#111827" stroke="#a78bfa" stroke-width="2"/>
+  <text x="638" y="147" class="title" fill="#f8fafc">Installed Skill</text>
+  <text x="638" y="180" class="body" fill="#ddd6fe">사용자 runtime projection</text>
+  <text x="638" y="209" class="small" fill="#cbd5e1">Repository checkout과 분리</text>
+
+  <rect x="944" y="112" width="176" height="124" rx="18" fill="#25163f" stroke="#f59e0b" stroke-width="2"/>
+  <text x="972" y="153" class="label" fill="#fcd34d">BOUNDARY</text>
+  <text x="972" y="184" class="body" fill="#f8fafc">자동 활성화 없음</text>
+  <text x="972" y="211" class="small" fill="#fde68a">Corpus write 없음</text>
+
+  <text x="56" y="322" class="label" fill="#6ee7b7">RUNTIME AUTHORITY LANE</text>
+  <rect x="48" y="344" width="1104" height="276" rx="24" fill="url(#runtimeLane)" opacity="0.72" stroke="#34d399" stroke-opacity="0.5"/>
+
+  <rect x="76" y="390" width="204" height="166" rx="18" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/>
+  <text x="100" y="426" class="label" fill="#7dd3fc">AUTHORITY</text>
+  <text x="100" y="460" class="title" fill="#f8fafc">Workstream</text>
+  <text x="100" y="489" class="body" fill="#bae6fd">placement map</text>
+  <text x="100" y="520" class="small" fill="#cbd5e1">Lifecycle · project home</text>
+
+  <line x1="284" y1="473" x2="342" y2="473" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="350" y="404" width="138" height="138" rx="69" fill="#172554" stroke="#60a5fa" stroke-width="3"/>
+  <text x="419" y="466" text-anchor="middle" class="title" fill="#dbeafe">Inspect</text>
+  <text x="419" y="495" text-anchor="middle" class="small" fill="#93c5fd">read-only</text>
+
+  <line x1="492" y1="473" x2="538" y2="473" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="546" y="404" width="138" height="138" rx="69" fill="#312e81" stroke="#a78bfa" stroke-width="3"/>
+  <text x="615" y="466" text-anchor="middle" class="title" fill="#ede9fe">Guide</text>
+  <text x="615" y="495" text-anchor="middle" class="small" fill="#c4b5fd">draft-only</text>
+
+  <line x1="688" y1="473" x2="734" y2="473" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="742" y="404" width="138" height="138" rx="69" fill="#422006" stroke="#fbbf24" stroke-width="3"/>
+  <text x="811" y="460" text-anchor="middle" class="title" fill="#fef3c7">Human</text>
+  <text x="811" y="488" text-anchor="middle" class="body" fill="#fde68a">exact approval</text>
+  <text x="811" y="512" text-anchor="middle" class="small" fill="#fcd34d">or rejection</text>
+
+  <line x1="884" y1="473" x2="930" y2="473" stroke="#34d399" stroke-width="3" marker-end="url(#arrowGreen)"/>
+
+  <rect x="938" y="390" width="184" height="166" rx="18" fill="#052e2b" stroke="#34d399" stroke-width="3"/>
+  <text x="962" y="426" class="label" fill="#6ee7b7">EXACT DISPATCH</text>
+  <text x="962" y="460" class="title" fill="#ecfdf5">Approved effect</text>
+  <text x="962" y="492" class="mono" fill="#a7f3d0">~/raw/**</text>
+  <text x="962" y="520" class="mono" fill="#a7f3d0">_registry/curation/**</text>
+
+  <rect x="350" y="574" width="772" height="28" rx="14" fill="#0f172a" stroke="#475569"/>
+  <text x="736" y="594" text-anchor="middle" class="small" fill="#cbd5e1">Mismatch → stop · preserve exact evidence · inspect before retry</text>
+</svg>

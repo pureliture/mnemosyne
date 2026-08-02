@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Mnemosyne approval lifecycle</title>
+  <desc id="desc">A read-only inspection can produce a pending proposal. Rejection leaves the source unchanged. Approval records APPROVED_PENDING_APPLY, and only an exact placement dispatch reaches APPLIED. Any mismatch safely stops as BLOCKED or RECOVERY_REQUIRED.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.55" stop-color="#17152d"/>
+      <stop offset="1" stop-color="#102a28"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/>
+    </marker>
+    <marker id="arrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fb7185"/>
+    </marker>
+    <style>
+      .label { font: 700 14px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0.1em; }
+      .title { font: 700 21px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .body { font: 500 15px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { font: 500 13px Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font: 700 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" rx="30" fill="url(#background)"/>
+  <circle cx="1090" cy="70" r="170" fill="#10b981" opacity="0.06"/>
+  <circle cx="90" cy="570" r="190" fill="#7c3aed" opacity="0.07"/>
+
+  <text x="56" y="54" class="label" fill="#c4b5fd">SINGLE PLACEMENT LIFECYCLE</text>
+
+  <rect x="52" y="92" width="200" height="126" rx="18" fill="#172554" stroke="#60a5fa" stroke-width="2"/>
+  <text x="78" y="128" class="label" fill="#93c5fd">READ-ONLY</text>
+  <text x="78" y="164" class="title" fill="#eff6ff">INSPECT ONLY</text>
+  <text x="78" y="193" class="small" fill="#bfdbfe">Corpus effect: none</text>
+
+  <line x1="256" y1="155" x2="328" y2="155" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="292" y="132" text-anchor="middle" class="small" fill="#cbd5e1">proposal</text>
+  <text x="292" y="148" text-anchor="middle" class="small" fill="#cbd5e1">dispatch</text>
+
+  <rect x="336" y="92" width="200" height="126" rx="18" fill="#27235e" stroke="#a78bfa" stroke-width="2"/>
+  <text x="362" y="128" class="label" fill="#c4b5fd">REVIEW NEEDED</text>
+  <text x="362" y="164" class="title" fill="#f5f3ff">PENDING</text>
+  <text x="362" y="193" class="small" fill="#ddd6fe">Source unchanged</text>
+
+  <path d="M 436 222 L 436 288 L 280 288 L 280 346" fill="none" stroke="#fb7185" stroke-width="3" marker-end="url(#arrowRose)"/>
+  <text x="350" y="274" text-anchor="middle" class="small" fill="#fda4af">reject decision</text>
+
+  <rect x="180" y="354" width="200" height="126" rx="18" fill="#3f1724" stroke="#fb7185" stroke-width="2"/>
+  <text x="206" y="390" class="label" fill="#fda4af">TERMINAL</text>
+  <text x="206" y="426" class="title" fill="#fff1f2">REJECTED</text>
+  <text x="206" y="455" class="small" fill="#fecdd3">Source unchanged</text>
+
+  <line x1="540" y1="155" x2="626" y2="155" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowAmber)"/>
+  <text x="583" y="132" text-anchor="middle" class="small" fill="#fde68a">approve</text>
+  <text x="583" y="148" text-anchor="middle" class="small" fill="#fde68a">decision</text>
+
+  <rect x="634" y="82" width="260" height="146" rx="18" fill="#422006" stroke="#fbbf24" stroke-width="3"/>
+  <text x="660" y="119" class="label" fill="#fcd34d">APPROVAL RECORDED</text>
+  <text x="660" y="156" class="mono" fill="#fef3c7">APPROVED_PENDING_APPLY</text>
+  <text x="660" y="188" class="small" fill="#fde68a">Approved, but source unchanged</text>
+  <text x="660" y="207" class="small" fill="#fde68a">until exact placement dispatch</text>
+
+  <line x1="898" y1="155" x2="978" y2="155" stroke="#34d399" stroke-width="3" marker-end="url(#arrowGreen)"/>
+  <text x="938" y="132" text-anchor="middle" class="small" fill="#a7f3d0">placement</text>
+  <text x="938" y="148" text-anchor="middle" class="small" fill="#a7f3d0">dispatch</text>
+
+  <rect x="986" y="92" width="162" height="126" rx="18" fill="#052e2b" stroke="#34d399" stroke-width="3"/>
+  <text x="1012" y="128" class="label" fill="#6ee7b7">VERIFIED</text>
+  <text x="1012" y="164" class="title" fill="#ecfdf5">APPLIED</text>
+  <text x="1012" y="193" class="small" fill="#a7f3d0">History confirms move</text>
+
+  <rect x="458" y="352" width="690" height="128" rx="20" fill="#31151d" stroke="#fb7185" stroke-width="2" stroke-dasharray="8 7"/>
+  <text x="488" y="389" class="label" fill="#fda4af">MISMATCH OR UNSAFE ARTIFACT</text>
+  <text x="488" y="426" class="mono" fill="#fff1f2">BLOCKED · RECOVERY_REQUIRED</text>
+  <text x="488" y="457" class="body" fill="#fecdd3">Stop · preserve evidence · inspect cause · never guess or mutate the request</text>
+
+  <path d="M 152 222 C 152 302, 508 302, 508 344" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrowRose)"/>
+  <path d="M 764 232 L 764 344" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrowRose)"/>
+  <path d="M 1067 222 L 1067 344" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrowRose)"/>
+
+  <rect x="52" y="514" width="1096" height="110" rx="18" fill="#16142b" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="80" y="548" class="label" fill="#c4b5fd">SEALED CONTEXT PLAN</text>
+  <text x="80" y="576" class="body" fill="#ede9fe">여러 effect를 하나의 validated approval unit으로 검토할 수 있습니다. 전체 effect 공개 → 전체 승인 → exact Context activation dispatch.</text>
+  <text x="80" y="602" class="small" fill="#cbd5e1">승인 뒤 effect membership을 수정하거나 일부만 조용히 적용하지 않습니다.</text>
+</svg>
