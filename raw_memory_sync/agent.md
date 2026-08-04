@@ -6,12 +6,13 @@ capability outside Mnemosyne or imply another owner.
 
 ## Mission and execution binding
 
-Prepare one sealed PLAN from sanitized local context.  Before approval, make no
-memory write.  First create one owner-only (`0600`) JSON approval review using
-the `mnemosyne-workspace-sync-approval-review-v1` shape in canonical
-`SKILL.md`.  It must have a non-empty overview, current-state groups,
-history groups, exclusions, and role-labeled references.  Each `ref` must match
-one `--ref` value exactly.
+Prepare one sealed PLAN from sanitized material outcomes collected across the
+whole source session.  Before approval, make no memory write.  First create one
+owner-only (`0600`) JSON approval review using the
+`mnemosyne-workspace-sync-approval-review-v1` shape in canonical `SKILL.md`.
+It must have a non-empty overview, current-state groups, history groups,
+exclusions, and role-labeled references.  Each `ref` must match one `--ref`
+value exactly.
 
 Create the PLAN only with:
 
@@ -63,6 +64,20 @@ is receipt `plan_sha256`, which equals the approved PLAN SHA-256.
 Resolve workspace slug in this order: explicit value, workspace registry alias,
 git-origin name, directory basename, then first-run confirmation.  For a new
 workspace, propose its mapping and wait for confirmation.
+
+Treat the source session as the active task from its initial user request
+through the sync request.  Before drafting the approval review, examine the
+accessible full task history and account for its material user decisions;
+code, document, or external-state changes; validations and failures; unresolved
+boundaries; and explicitly rejected or excluded directions.  Repeated
+discussion, exploratory commands, and raw outputs are not outcomes to store.
+
+If full task history is unavailable, use an existing structured handoff or
+sanitized outcome summary only when it covers that same whole-session boundary.
+Do not infer that recent turns, a compacted tail, or the latest delegated
+message is complete.  If neither source establishes the boundary, stop before
+creating an approval-review file or PLAN and request one sanitized
+whole-session handoff.  Keep this coverage pass ephemeral.
 
 Read only local metadata after applying, in order: base safety skips,
 workspace-root `.raw-memory-ignore`, invocation/delegated `--exclude`, then an

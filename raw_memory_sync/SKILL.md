@@ -12,12 +12,28 @@ Mnemosyne.
 Use it when the user asks to sync, update, register, or refresh raw memory for
 the current workspace, including `/raw-memory-sync`.  Accepted hints are
 `--workspace <slug>`, repeated `--exclude <glob>`, workspace-root
-`.raw-memory-ignore`, `--workstream <id>`, a structured handoff path, and a
-sanitized outcome summary.
+`.raw-memory-ignore`, `--workstream <id>`, a structured whole-session handoff
+path, and a whole-session sanitized outcome summary.
 
 Use `raw-memory-audit` instead when the user asks only whether an existing
 memory is accurate or current. An audit request must not create a review, PLAN,
 or memory write.
+
+## Source-session scope
+
+Treat the source session as the active task from its initial user request
+through the sync request.  Before creating an approval review, collect every
+material outcome across that whole session: user decisions; code, document, or
+external-state changes; validations and failures; unresolved boundaries; and
+explicitly rejected or excluded directions.  Do not store repeated discussion,
+exploratory commands, or raw outputs as outcomes.
+
+Use accessible full task history when available.  Otherwise use an existing
+structured handoff or sanitized outcome summary only when it covers the same
+whole-session boundary and material outcomes.  Do not assume that recent turns
+or a compacted summary are complete.  If the whole boundary is unavailable, do
+not create an approval review or PLAN; request one sanitized whole-session
+handoff.
 
 ## Boundaries
 
