@@ -15,6 +15,18 @@ not confer delegation or ownership outside Mnemosyne.
    output, raw file or log bodies, environment dumps, credentials, tokens,
    email values, or secret-like values.  Store transcript summaries by default;
    raw transcripts require explicit approval.
+   Treat the source session as the active task from its initial user request
+   through the sync request.  Before drafting an approval review, collect the
+   material outcomes across that whole session: user decisions; code, document,
+   or external-state changes; validations and failures; unresolved boundaries;
+   and explicitly rejected or excluded directions.  Repeated discussion,
+   exploratory commands, and raw outputs are not outcomes to store.
+   Use accessible full task history when available.  Otherwise use an existing
+   structured handoff or sanitized outcome summary only when it covers that
+   same whole-session boundary.  If neither source establishes the boundary,
+   do not create an approval review or PLAN; request one sanitized whole-session
+   handoff.  Do not add a manifest, coverage schema, persistent checklist, or
+   platform adapter for this check.
    Every factual approval-review item is one complete standalone plain-text
    sentence expressing one fact. Historical facts and current assertions are
    separate items. History groups preserve a sanitized plain-language summary
